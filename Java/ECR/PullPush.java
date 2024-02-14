@@ -85,6 +85,8 @@ public class PullPush
 		
 		System.out.println("Starting pull of all tags of "+ imageUrl +".");
 		cmdString = "docker pull "+ imageUrl+" -a";
+		// to pull selectively, use the following to get a list of all tags
+		// curl -X GET -u <userName>:<password> https://<registry>/v1/repositories/<imageRepoUri>/tags
 		String result = runShell(cmdString);
 		Log(imageUrl+" pull returned "+result.charAt(0));
 		return result.charAt(0)-'0';

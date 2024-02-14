@@ -66,10 +66,7 @@ public class PullPush
 		String output = runShell(cmdString);
 		if ("0".compareTo(output.substring(0,output.indexOf('\n')))==0)
 		{
-			String repoUri = output.substring(output.indexOf('\n')+1, output.length());
-			//"repositoryUri": "xxxxxxxxxx.dkr.ecr.us-east-2.amazonaws.com/quay.io/alfresco/alfresco-elasticsearch-live-indexing-metadata"
-			//String region = output.split(".")[3];
-					
+			String repoUri = output.substring(output.indexOf('\n')+1, output.length());				
 			String repoPrefix = repoUri.substring(0,repoUri.indexOf("/"));
 			String strGetDockerLogin = "aws ecr get-login-password --region "+region+" | docker login --username AWS --password-stdin "+repoPrefix;
 			output = runShell(strGetDockerLogin);

@@ -3,6 +3,8 @@ kind: ServiceAccount
 metadata:
   name: iam-sa
   namespace: alfresco
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<accountId>:role/<roleName>
 ---
 apiVersion: v1
 kind: ConfigMap

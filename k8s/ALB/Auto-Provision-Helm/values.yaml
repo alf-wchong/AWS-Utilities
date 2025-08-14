@@ -1,0 +1,25 @@
+replicaCount: 1
+
+image:
+  repository: lmenezes/cerebro
+  tag: "0.8.1"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 9000
+
+opensearch:
+  endpoint: "<your-opensearch-serverless-collection-endpoint>"  # e.g. search-collection-xxx.aoss.amazonaws.com
+  region: "<your-aws-region>"  # e.g. us-west-2
+
+ingress:
+  enabled: true
+  hostname: claremont.books.com
+  tlsSecretName: "<your-tls-secret>"  # Kubernetes TLS secret containing cert for claremont.books.com
+  certificateArn: "<your-acm-certificate-arn>"  # AWS ACM Certificate ARN for claremont.books.com
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: []

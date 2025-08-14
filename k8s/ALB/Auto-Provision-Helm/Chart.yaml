@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cerebro
+description: A Helm chart to deploy Cerebro connected to Amazon OpenSearch Serverless with AWS ALB ingress
+type: application
+version: 0.1.0
+appVersion: "0.8.1"

@@ -3,6 +3,7 @@ Description=App with auto-refreshing AWS creds
 After=network-online.target
 
 [Service]
+Type=simple
 ExecStart=/path/to/tokenExpiryWatchdog.sh
 Restart=always
 RestartSec=5

@@ -1,0 +1,11 @@
+[Unit]
+Description=App with auto-refreshing AWS creds
+After=network-online.target
+
+[Service]
+ExecStart=/path/to/tokenExpiryWatchdog.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

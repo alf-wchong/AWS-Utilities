@@ -1,0 +1,448 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Self-hosted Forgejo git server on a single EC2 instance (stopped by
+  default), running rootless under Podman with systemd Quadlet units,
+  fronted by Caddy for automatic Let's Encrypt TLS, with DuckDNS dynamic
+  DNS updated on every boot, and Lambda Function URLs to start/stop the
+  instance and manage SSH access on demand.
+
+Parameters:
+  DuckDnsSubdomain:
+    Type: String
+    Description: DuckDNS subdomain only, e.g. "mygitea" for mygitea.duckdns.org
+
+  DuckDnsToken:
+    Type: String
+    NoEcho: true
+    Description: DuckDNS account token
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH access
+
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t4g.micro
+      - t4g.small
+      - t3.micro
+      - t3.small
+    Description: >
+      t4g.* is ARM/Graviton (matches the default AMI below). If you switch to
+      a t3.* (x86) type, also change LatestAmiId's default to an x86_64 AMI
+      path.
+
+  VolumeSizeGb:
+    Type: Number
+    Default: 10
+    MinValue: 8
+    Description: Size of the root EBS volume (gp3), persists across stop/start
+
+  AllowedSshCidr:
+    Type: String
+    Description: >
+      Initial CIDR allowed to SSH, e.g. 203.0.113.4/32. Only used to seed the
+      security group at stack-creation time - the start Lambda overwrites
+      this rule on every start with whichever IP called it, so this value
+      becomes stale immediately after your first use. Fine to set to your
+      current IP just to get the stack created.
+
+  StartStopSharedSecret:
+    Type: String
+    NoEcho: true
+    Description: Shared secret required in the JSON body of start/stop calls
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-arm64
+
+Resources:
+
+  ForgejoSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Forgejo server - SSH restricted, HTTPS open (TLS-ALPN-01, no port 80 needed)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: forgejo-server-sg
+
+  ForgejoInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref ForgejoSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSizeGb
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: forgejo-server
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -eux
+
+              dnf update -y
+              dnf install -y podman
+
+              # Rootless containers can't bind ports <1024 by default.
+              # Rather than run anything as root, allow unprivileged binds
+              # from 443 up - Caddy only needs 443 now (TLS-ALPN-01, no
+              # port 80 / HTTP-01 challenge).
+              echo 'net.ipv4.ip_unprivileged_port_start=443' > /etc/sysctl.d/99-rootless-ports.conf
+              sysctl --system
+
+              # Dedicated unprivileged user to run the whole stack rootless
+              id -u forgejo &>/dev/null || useradd -m -s /bin/bash forgejo
+              loginctl enable-linger forgejo
+              # Make sure a subuid/subgid range exists for user namespaces
+              grep -q '^forgejo:' /etc/subuid || echo "forgejo:200000:65536" >> /etc/subuid
+              grep -q '^forgejo:' /etc/subgid || echo "forgejo:200000:65536" >> /etc/subgid
+
+              FULL_DOMAIN="${SubDomain}.duckdns.org"
+
+              install -d -o forgejo -g forgejo -m 700 \
+                /home/forgejo/.config/containers/systemd \
+                /home/forgejo/forgejo-data \
+                /home/forgejo/caddy_data \
+                /home/forgejo/caddy_config
+
+              QUADLET_DIR=/home/forgejo/.config/containers/systemd
+
+              cat > "$QUADLET_DIR/forgejo_net.network" <<'EOF'
+              [Network]
+              NetworkName=forgejo_net
+              EOF
+
+              cat > "$QUADLET_DIR/forgejo.container" <<EOF
+              [Unit]
+              Description=Forgejo git server
+              After=network-online.target
+
+              [Container]
+              ContainerName=forgejo
+              Image=codeberg.org/forgejo/forgejo:10
+              Network=forgejo_net.network
+              Environment=USER_UID=1000
+              Environment=USER_GID=1000
+              Environment=FORGEJO__database__DB_TYPE=sqlite3
+              Environment=FORGEJO__server__DOMAIN=$FULL_DOMAIN
+              Environment=FORGEJO__server__ROOT_URL=https://$FULL_DOMAIN/
+              Environment=FORGEJO__server__SSH_PORT=2222
+              Environment=FORGEJO__server__SSH_LISTEN_PORT=22
+              Volume=%h/forgejo-data:/data
+              PublishPort=2222:22
+
+              [Service]
+              Restart=always
+
+              [Install]
+              WantedBy=default.target
+              EOF
+
+              cat > "$QUADLET_DIR/caddy.container" <<'EOF'
+              [Unit]
+              Description=Caddy reverse proxy
+              After=network-online.target
+
+              [Container]
+              ContainerName=caddy
+              Image=docker.io/library/caddy:2
+              Network=forgejo_net.network
+              Volume=%h/Caddyfile:/etc/caddy/Caddyfile
+              Volume=%h/caddy_data:/data
+              Volume=%h/caddy_config:/config
+              PublishPort=443:443
+
+              [Service]
+              Restart=always
+
+              [Install]
+              WantedBy=default.target
+              EOF
+
+              cat > /home/forgejo/Caddyfile <<EOF
+              {
+                  disable_http_challenge
+              }
+
+              $FULL_DOMAIN {
+                  reverse_proxy forgejo:3000
+              }
+              EOF
+
+              cat > /home/forgejo/duckdns-update.sh <<EOF
+              #!/bin/bash
+              PUBLIC_IP=\$(curl -s http://checkip.amazonaws.com)
+              curl -s "https://www.duckdns.org/update?domains=${SubDomain}&token=${Token}&ip=\$PUBLIC_IP"
+              EOF
+              chmod +x /home/forgejo/duckdns-update.sh
+
+              # Runs on every boot, before the user's Quadlet services, to
+              # keep DuckDNS pointed at whatever IP this boot picked up.
+              cat > /etc/systemd/system/duckdns-update.service <<'EOF'
+              [Unit]
+              Description=Update DuckDNS record on boot
+              After=network-online.target
+              Before=user@.service
+
+              [Service]
+              Type=oneshot
+              User=forgejo
+              ExecStart=/home/forgejo/duckdns-update.sh
+
+              [Install]
+              WantedBy=multi-user.target
+              EOF
+
+              chown -R forgejo:forgejo /home/forgejo
+
+              systemctl daemon-reload
+              systemctl enable --now duckdns-update.service
+
+              # Bring up the user's systemd manager now (linger normally
+              # brings this up automatically on subsequent boots) and let
+              # its generator pick up the Quadlet files.
+              systemctl start "user@$(id -u forgejo).service" || true
+              machinectl shell forgejo@ /bin/bash -c \
+                'systemctl --user daemon-reload && systemctl --user start forgejo_net-network.service forgejo.service caddy.service'
+            - SubDomain: !Ref DuckDnsSubdomain
+              Token: !Ref DuckDnsToken
+
+  # ---------- Start/Stop Lambdas ----------
+
+  StartStopExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartStopThisInstanceOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/Name: forgejo-server
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                Resource: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${ForgejoSecurityGroup}"
+
+  StartInstanceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forgejo-start-instance
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt StartStopExecutionRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          INSTANCE_ID: !Ref ForgejoInstance
+          SHARED_SECRET: !Ref StartStopSharedSecret
+          SECURITY_GROUP_ID: !Ref ForgejoSecurityGroup
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          def handler(event, context):
+              body = event.get("body") or "{}"
+              try:
+                  data = json.loads(body)
+              except Exception:
+                  data = {}
+              if data.get("secret") != os.environ["SHARED_SECRET"]:
+                  return {"statusCode": 403, "body": "forbidden"}
+
+              # Function URLs pass the real caller IP through here - use it
+              # to keep the SSH rule pointed at wherever you're calling from,
+              # since ISP-rotated IPs make a static CIDR useless.
+              source_ip = (
+                  event.get("requestContext", {})
+                  .get("http", {})
+                  .get("sourceIp")
+              )
+              if not source_ip:
+                  return {"statusCode": 400, "body": "could not determine source IP"}
+
+              ec2 = boto3.client("ec2")
+              sg_id = os.environ["SECURITY_GROUP_ID"]
+
+              sg = ec2.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+              for perm in sg.get("IpPermissions", []):
+                  if (
+                      perm.get("IpProtocol") == "tcp"
+                      and perm.get("FromPort") == 22
+                      and perm.get("ToPort") == 22
+                      and perm.get("IpRanges")
+                  ):
+                      ec2.revoke_security_group_ingress(
+                          GroupId=sg_id,
+                          IpPermissions=[{
+                              "IpProtocol": "tcp",
+                              "FromPort": 22,
+                              "ToPort": 22,
+                              "IpRanges": perm["IpRanges"],
+                          }],
+                      )
+
+              ec2.authorize_security_group_ingress(
+                  GroupId=sg_id,
+                  IpPermissions=[{
+                      "IpProtocol": "tcp",
+                      "FromPort": 22,
+                      "ToPort": 22,
+                      "IpRanges": [{
+                          "CidrIp": f"{source_ip}/32",
+                          "Description": "auto-updated by start lambda",
+                      }],
+                  }],
+              )
+
+              ec2.start_instances(InstanceIds=[os.environ["INSTANCE_ID"]])
+              return {
+                  "statusCode": 200,
+                  "body": f"starting, ssh now allowed from {source_ip}",
+              }
+
+  StopInstanceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: forgejo-stop-instance
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt StartStopExecutionRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          INSTANCE_ID: !Ref ForgejoInstance
+          SHARED_SECRET: !Ref StartStopSharedSecret
+          SECURITY_GROUP_ID: !Ref ForgejoSecurityGroup
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          def handler(event, context):
+              body = event.get("body") or "{}"
+              try:
+                  data = json.loads(body)
+              except Exception:
+                  data = {}
+              if data.get("secret") != os.environ["SHARED_SECRET"]:
+                  return {"statusCode": 403, "body": "forbidden"}
+
+              ec2 = boto3.client("ec2")
+              sg_id = os.environ["SECURITY_GROUP_ID"]
+
+              # Close SSH entirely while stopped - nothing to reach anyway,
+              # and it avoids leaving a stale IP allowlisted between sessions.
+              sg = ec2.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+              for perm in sg.get("IpPermissions", []):
+                  if (
+                      perm.get("IpProtocol") == "tcp"
+                      and perm.get("FromPort") == 22
+                      and perm.get("ToPort") == 22
+                      and perm.get("IpRanges")
+                  ):
+                      ec2.revoke_security_group_ingress(
+                          GroupId=sg_id,
+                          IpPermissions=[{
+                              "IpProtocol": "tcp",
+                              "FromPort": 22,
+                              "ToPort": 22,
+                              "IpRanges": perm["IpRanges"],
+                          }],
+                      )
+
+              ec2.stop_instances(InstanceIds=[os.environ["INSTANCE_ID"]])
+              return {"statusCode": 200, "body": "stopping, ssh access revoked"}
+
+  StartInstanceUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt StartInstanceFunction.Arn
+      AuthType: NONE
+
+  StopInstanceUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt StopInstanceFunction.Arn
+      AuthType: NONE
+
+  StartInstanceUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StartInstanceFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  StopInstanceUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StopInstanceFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref ForgejoInstance
+
+  InstancePublicIp:
+    Description: Public IP at stack-creation time only - will change on each stop/start, use the DuckDNS domain instead
+    Value: !GetAtt ForgejoInstance.PublicIp
+
+  DuckDnsUrl:
+    Description: The URL to bookmark
+    Value: !Sub "https://${DuckDnsSubdomain}.duckdns.org"
+
+  StartFunctionUrl:
+    Description: POST here with {"secret":"..."} to start the instance
+    Value: !GetAtt StartInstanceUrl.FunctionUrl
+
+  StopFunctionUrl:
+    Description: POST here with {"secret":"..."} to stop the instance
+    Value: !GetAtt StopInstanceUrl.FunctionUrl

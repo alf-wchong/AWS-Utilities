@@ -21,8 +21,11 @@ The **Credit code** box is each row of the console's Credit codes table. Blue bo
 |---|---|---|
 | `fundRequestId` | Fund request ID | Allocation `BenefitApplicationId` |
 | `opportunityId` | Associated opportunity | Last segment of the opportunity ARN in the fund request's `AssociatedResources` |
-| `companyName` | Customer company name | Opportunity `Customer.Account.CompanyName` |
+| `companyName` | Company name | Opportunity `Customer.Account.CompanyName` |
 | `partnerOpportunityIdentifier` | Partner opportunity identifier | Opportunity `PartnerOpportunityIdentifier` |
+| `opportunityCreatedDate` | Created date (UTC) | Opportunity `CreatedDate` |
+| `opportunityTargetCloseDate` | Target close date (UTC) | Opportunity `LifeCycle.TargetCloseDate` |
+| `projectStartDate` / `projectEndDate` | Project date range (UTC) | Fund request `BenefitApplicationDetails.PlannedStartDate` / `.PlannedEndDate` |
 | `issuedAmount` | Issued credit amount (USD) | Allocation `FulfillmentDetail.CreditDetails.IssuedAmount` |
 | `allocatedAmount` | Total allocated amount (USD) | Allocation `FulfillmentDetail.CreditDetails.AllocatedAmount` |
 | `creditCodes[].issuedAt` | Credit codes → Issued date (UTC) | Credit code `IssuedAt` |
@@ -208,16 +211,22 @@ jq -n \
   --slurpfile opps  opportunities.json '
   # lookup tables
   ($apps[0] | map({key: .Id, value: ([.AssociatedResources[]? | select(test("opportunity/")) | split("/") | last] | first)}) | from_entries) as $app2opp
+  | ($apps[0] | map({key: .Id, value: .}) | from_entries) as $appById
   | ($opps[0] | map({key: .Id, value: .}) | from_entries) as $oppById
   | [ $alloc[0][]
       | . as $a
       | ($app2opp[$a.BenefitApplicationId]) as $oppId
       | ($oppById[$oppId // ""]) as $o
+      | ($appById[$a.BenefitApplicationId].BenefitApplicationDetails // {}) as $d
       | {
           fundRequestId:                $a.BenefitApplicationId,
           opportunityId:                $oppId,
           companyName:                  $o.Customer.Account.CompanyName,
           partnerOpportunityIdentifier: $o.PartnerOpportunityIdentifier,
+          opportunityCreatedDate:       $o.CreatedDate,
+          opportunityTargetCloseDate:   $o.LifeCycle.TargetCloseDate,
+          projectStartDate:             $d.PlannedStartDate,
+          projectEndDate:               $d.PlannedEndDate,
           allocationId:                 $a.Id,
           allocationStatus:             $a.Status,
           allocatedAmount:              $a.FulfillmentDetail.CreditDetails.AllocatedAmount,
@@ -243,6 +252,10 @@ jq -n \
     "opportunityId": "O1234567",
     "companyName": "Example Customer Ltd",
     "partnerOpportunityIdentifier": "HYL-OPP-0042",
+    "opportunityCreatedDate": "2026-02-25T14:16:22+00:00",
+    "opportunityTargetCloseDate": "2026-07-31",
+    "projectStartDate": "2026-06-02T00:00:00.000Z",
+    "projectEndDate": "2026-09-02T00:00:00.000Z",
     "allocationId": "benalloc-xxxxxxxxxxxxxx",
     "allocationStatus": "FULFILLED",
     "allocatedAmount": { "Amount": "9438", "CurrencyCode": "USD" },
@@ -367,17 +380,23 @@ jq -n --arg cf "$CODES_FIELD" --arg vf "$VALUE_FIELD" \
   --slurpfile apps  "$WORK/apps.json" \
   --slurpfile opps  "$WORK/opps.json" '
   ($apps[0] | map({key: .Id, value: ([.AssociatedResources[]? | select(test("opportunity/")) | split("/") | last] | first)}) | from_entries) as $app2opp
+  | ($apps[0] | map({key: .Id, value: .}) | from_entries) as $appById
   | ($opps[0] | map({key: .Id, value: .}) | from_entries) as $oppById
   | [ $alloc[0][]
       | . as $a
       | ($a.FulfillmentDetail.CreditDetails // {}) as $c
       | ($app2opp[$a.BenefitApplicationId]) as $oppId
       | ($oppById[$oppId // ""]) as $o
+      | ($appById[$a.BenefitApplicationId].BenefitApplicationDetails // {}) as $d
       | {
           fundRequestId:                $a.BenefitApplicationId,
           opportunityId:                $oppId,
           companyName:                  $o.Customer.Account.CompanyName,
           partnerOpportunityIdentifier: $o.PartnerOpportunityIdentifier,
+          opportunityCreatedDate:       $o.CreatedDate,
+          opportunityTargetCloseDate:   $o.LifeCycle.TargetCloseDate,
+          projectStartDate:             $d.PlannedStartDate,
+          projectEndDate:               $d.PlannedEndDate,
           allocationId:                 $a.Id,
           allocationStatus:             $a.Status,
           allocatedAmount:              $c.AllocatedAmount,
@@ -423,7 +442,9 @@ Some field names come straight from the API reference. Others are assumptions. C
 | Name of the credit code list inside `CreditDetails` (`Codes`) | Confirmed |
 | Credit code amount field (`Value`) | Confirmed |
 | `FulfillmentDetail.CreditDetails` path on the allocation | Confirmed |
-| Opportunity `Customer.Account.CompanyName`, `PartnerOpportunityIdentifier` | Partner Central Selling API |
+| Opportunity `Customer.Account.CompanyName`, `PartnerOpportunityIdentifier`, `CreatedDate`, `LifeCycle.TargetCloseDate` | Confirmed (`aws partnercentral-selling get-opportunity`) |
+| Fund request `BenefitApplicationDetails.PlannedStartDate` / `PlannedEndDate` | Confirmed |
+| Opportunity ARN format in `AssociatedResources` (`…/catalog/AWS/opportunity/O…`) | Confirmed |
 | `--benefit-identifiers`, `--benefit-application-identifiers` CLI flags | Confirmed working. **One value per call** |
 
 ---

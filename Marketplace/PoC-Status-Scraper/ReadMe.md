@@ -116,11 +116,12 @@ echo "$POC_BENEFIT_ID"
 **Mode A: all PoC fund requests**
 
 ```bash
-aws partnercentral-benefits list-benefit-allocations \
-  --catalog $CAT \
-  --benefit-identifiers $POC_BENEFIT_ID \
-  --fulfillment-types CREDITS \
-  --output json > allocations.json
+# The API accepts only ONE benefit ID per call, so loop over them
+for ben in $POC_BENEFIT_ID; do
+  aws partnercentral-benefits list-benefit-allocations \
+    --catalog $CAT --benefit-identifiers "$ben" \
+    --fulfillment-types CREDITS --output json
+done | jq -s '{BenefitAllocationSummaries: map(.BenefitAllocationSummaries[])}' > allocations.json
 ```
 
 **Mode B: a fixed list of fund request IDs**
@@ -132,14 +133,17 @@ benappl-z4qx28vszqb713 benappl-jq4zrrhj147e14 benappl-azjt2brk1mj8r0 \
 benappl-i7ic6q1p4jfuzu benappl-ym0mds5ve42bs5 benappl-hs6ppkhb09xasu \
 benappl-0jxl4u07c4cb1c"
 
-aws partnercentral-benefits list-benefit-allocations \
-  --catalog $CAT \
-  --benefit-application-identifiers $FUND_REQUEST_IDS \
-  --fulfillment-types CREDITS \
-  --output json > allocations.json
+# The API accepts only ONE fund request ID per call, so loop over them
+for app in $FUND_REQUEST_IDS; do
+  aws partnercentral-benefits list-benefit-allocations \
+    --catalog $CAT --benefit-application-identifiers "$app" \
+    --fulfillment-types CREDITS --output json
+done | jq -s '{BenefitAllocationSummaries: map(.BenefitAllocationSummaries[])}' > allocations.json
 ```
 
-> The CLI handles pagination automatically and returns every page.
+> **Important:** `--benefit-identifiers` and `--benefit-application-identifiers` each accept **only one value per call**. Passing several returns `ValidationException: Member must have length less than or equal to 1`, so always loop. The CLI handles pagination within each call automatically.
+>
+> Don't overwrite `allocations.json` by running both modes. Save the second result to a different file, such as `allocations_by_benefit.json`.
 
 Check the result:
 
@@ -300,13 +304,14 @@ if [[ ${#IDS[@]} -eq 0 ]]; then
     | jq -r '[.BenefitSummaries[] | select(.Name | test("proof of concept|\\bpoc\\b"; "i")) | .Id] | join(" ")')
   [[ -z "$POC_IDS" ]] && { echo "No PoC benefit found" >&2; exit 1; }
   echo "PoC benefit ID(s): $POC_IDS" >&2
-  # shellcheck disable=SC2086
-  aws partnercentral-benefits list-benefit-allocations --catalog "$CAT" \
-    --benefit-identifiers $POC_IDS --fulfillment-types CREDITS \
-    --output json > "$WORK/allocations.json"
+  # The API accepts only one benefit ID per call
+  for ben in $POC_IDS; do
+    aws partnercentral-benefits list-benefit-allocations --catalog "$CAT" \
+      --benefit-identifiers "$ben" --fulfillment-types CREDITS --output json
+  done | jq -s '{BenefitAllocationSummaries: (map(.BenefitAllocationSummaries[]))}' > "$WORK/allocations.json"
 else
   echo "Mode: ${#IDS[@]} specified fund request(s)" >&2
-  # Query one at a time so the call works whatever the filter's list limit is
+  # The API accepts only one fund request ID per call
   for app in "${IDS[@]}"; do
     aws partnercentral-benefits list-benefit-allocations --catalog "$CAT" \
       --benefit-application-identifiers "$app" --fulfillment-types CREDITS --output json
@@ -401,7 +406,7 @@ Some field names come straight from the API reference. Others are assumptions. C
 | Credit code amount field (`Value`) | **Check.** Set `VALUE_FIELD` |
 | `FulfillmentDetail.CreditDetails` path on the allocation | **Check** with `jq '.[0].FulfillmentDetail'` |
 | Opportunity `Customer.Account.CompanyName`, `PartnerOpportunityIdentifier` | Partner Central Selling API |
-| `--benefit-application-identifiers` CLI flag | **Check** with `aws partnercentral-benefits list-benefit-allocations help` |
+| `--benefit-identifiers`, `--benefit-application-identifiers` CLI flags | Confirmed working. **One value per call** |
 
 ---
 
@@ -412,6 +417,7 @@ Some field names come straight from the API reference. Others are assumptions. C
 | `Invalid choice: 'partnercentral-benefits'` | The AWS CLI is too old | Upgrade AWS CLI v2 |
 | `AccessDeniedException` | Missing IAM permission, or wrong account/profile | Use the account linked to Partner Central; add the policy in §3 |
 | `ValidationException` on `--catalog` | Wrong catalog or region | Use `--catalog AWS` and `us-east-1` |
+| `ValidationException … length less than or equal to 1` | More than one ID was passed in a single call | Loop over the IDs one at a time (see Step 2); the script already does this |
 | `Unknown options: --benefit-application-identifiers` | The flag name is different in your CLI version | Check `… list-benefit-allocations help`; the script's one-ID-at-a-time loop also works |
 | `creditCodes` is always `[]` | The credit code list has a different name | Look at `jq '.[0].FulfillmentDetail.CreditDetails \| keys'` and set `CODES_FIELD` |
 | `value` is `null` | The code amount field has a different name | Set `VALUE_FIELD` (e.g. `Amount`) |

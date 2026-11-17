@@ -159,7 +159,14 @@ for id in $(jq -r '.BenefitAllocationSummaries[].Id' allocations.json); do
   aws partnercentral-benefits get-benefit-allocation \
     --catalog $CAT --identifier "$id" --output json
 done | jq -s '.' > allocation_details.json
+
+# Pre-approved funding pools have no fund request, so leave them out
+jq -r '.[] | select(.BenefitApplicationId == null) | [.Id, .Name, .Status] | @tsv' allocation_details.json
+jq 'map(select(.BenefitApplicationId != null))' allocation_details.json > alloc_clean.json
+mv alloc_clean.json allocation_details.json
 ```
+
+> The first `jq` command lists allocations with no `BenefitApplicationId`, such as pre-approved funding pools (names like `TR-POC-SCA`). They aren't tied to a single fund request, so the export skips them. The script does this automatically and prints how many it skipped.
 
 **Before you go on, look at one raw record:**
 
@@ -275,6 +282,7 @@ Save this as `export_poc_credits.sh` and run `chmod +x export_poc_credits.sh`.
 #      OUT (default poc_issued_credits.json)
 
 set -euo pipefail
+trap 'echo "FAILED at line $LINENO (step: ${STEP:-startup})" >&2' ERR
 
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 CAT="${CATALOG:-AWS}"
@@ -323,16 +331,25 @@ echo "Allocations found: $N" >&2
 [[ "$N" -eq 0 ]] && { echo "[]" > "$OUT"; echo "Nothing to export." >&2; exit 0; }
 
 # ---------- Step 3: allocation details ----------
+STEP="3 get-benefit-allocation"
 for id in $(jq -r '.BenefitAllocationSummaries[].Id' "$WORK/allocations.json"); do
   aws partnercentral-benefits get-benefit-allocation --catalog "$CAT" --identifier "$id" --output json
-done | jq -s '.' > "$WORK/alloc.json"
+done | jq -s '.' > "$WORK/alloc_all.json"
+
+# Skip allocations with no fund request (for example pre-approved funding pools)
+SKIPPED=$(jq '[.[] | select(.BenefitApplicationId == null)] | length' "$WORK/alloc_all.json")
+jq 'map(select(.BenefitApplicationId != null))' "$WORK/alloc_all.json" > "$WORK/alloc.json"
+echo "Skipped $SKIPPED allocation(s) with no fund request; $(jq length "$WORK/alloc.json") remain" >&2
+[[ "$(jq length "$WORK/alloc.json")" -eq 0 ]] && { echo "[]" > "$OUT"; echo "Nothing to export." >&2; exit 0; }
 
 # ---------- Step 4: fund requests ----------
+STEP="4 get-benefit-application"
 for app in $(jq -r '[.[].BenefitApplicationId // empty] | unique | .[]' "$WORK/alloc.json"); do
   aws partnercentral-benefits get-benefit-application --catalog "$CAT" --identifier "$app" --output json
 done | jq -s '.' > "$WORK/apps.json"
 
 # ---------- Step 5: opportunities ----------
+STEP="5 get-opportunity"
 OPP_IDS=$(jq -r '[.[].AssociatedResources[]? | select(test("opportunity/")) | split("/") | last] | unique | .[]' "$WORK/apps.json")
 if [[ -n "$OPP_IDS" ]]; then
   for opp in $OPP_IDS; do
@@ -344,6 +361,7 @@ else
 fi
 
 # ---------- Step 6: join ----------
+STEP="6 join"
 jq -n --arg cf "$CODES_FIELD" --arg vf "$VALUE_FIELD" \
   --slurpfile alloc "$WORK/alloc.json" \
   --slurpfile apps  "$WORK/apps.json" \
@@ -402,9 +420,9 @@ Some field names come straight from the API reference. Others are assumptions. C
 | `CreditDetails.AllocatedAmount`, `CreditDetails.IssuedAmount` | Documented |
 | Credit code `AwsCreditCode`, `AwsAccountId`, `Status`, `IssuedAt`, `ExpiresAt` | Documented |
 | Fund request `AssociatedResources` (array of ARNs) | Documented |
-| Name of the credit code list inside `CreditDetails` (`Codes`) | **Check.** Set `CODES_FIELD` |
-| Credit code amount field (`Value`) | **Check.** Set `VALUE_FIELD` |
-| `FulfillmentDetail.CreditDetails` path on the allocation | **Check** with `jq '.[0].FulfillmentDetail'` |
+| Name of the credit code list inside `CreditDetails` (`Codes`) | Confirmed |
+| Credit code amount field (`Value`) | Confirmed |
+| `FulfillmentDetail.CreditDetails` path on the allocation | Confirmed |
 | Opportunity `Customer.Account.CompanyName`, `PartnerOpportunityIdentifier` | Partner Central Selling API |
 | `--benefit-identifiers`, `--benefit-application-identifiers` CLI flags | Confirmed working. **One value per call** |
 
@@ -418,6 +436,7 @@ Some field names come straight from the API reference. Others are assumptions. C
 | `AccessDeniedException` | Missing IAM permission, or wrong account/profile | Use the account linked to Partner Central; add the policy in §3 |
 | `ValidationException` on `--catalog` | Wrong catalog or region | Use `--catalog AWS` and `us-east-1` |
 | `ValidationException … length less than or equal to 1` | More than one ID was passed in a single call | Loop over the IDs one at a time (see Step 2); the script already does this |
+| `jq: error … Cannot index object with null` | Some allocations have no `BenefitApplicationId` (pre-approved funding pools) | Filter them out (Step 3); the script does this and prints the count skipped |
 | `Unknown options: --benefit-application-identifiers` | The flag name is different in your CLI version | Check `… list-benefit-allocations help`; the script's one-ID-at-a-time loop also works |
 | `creditCodes` is always `[]` | The credit code list has a different name | Look at `jq '.[0].FulfillmentDetail.CreditDetails \| keys'` and set `CODES_FIELD` |
 | `value` is `null` | The code amount field has a different name | Set `VALUE_FIELD` (e.g. `Amount`) |

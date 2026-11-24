@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Technical Validation opportunities</title>
+<style>
+:root { color-scheme: light dark; --bg:#ffffff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d1d9e0; --accent:#0969da; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d; --accent:#58a6ff; }
+}
+body { background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; margin:0; padding:24px; line-height:1.45; }
+h1 { margin:0 0 4px; font-size:1.5rem; }
+h3 { margin:24px 0 8px; font-size:1rem; color:var(--muted); }
+.meta { color:var(--muted); font-size:0.9rem; margin:0 0 16px; }
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+.tabs button { background:none; border:1px solid transparent; border-bottom:none; color:var(--muted); padding:8px 16px; font:inherit; cursor:pointer; border-radius:6px 6px 0 0; }
+.tabs button[aria-selected='true'] { color:var(--fg); background:var(--card); border-color:var(--line); font-weight:600; }
+.bar { display:flex; align-items:center; gap:12px; margin-bottom:8px; color:var(--muted); font-size:0.9rem; }
+button.plain { font:inherit; font-size:0.85rem; padding:3px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
+.stats { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:150px; }
+.label { color:var(--muted); font-size:0.8rem; }
+.value { color:var(--accent); font-size:1.4rem; font-weight:600; }
+.wrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:0.9rem; }
+th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:top; }
+thead th { background:var(--card); }
+thead tr.sorts th { position:sticky; top:0; z-index:1; }
+th button.sort { all:unset; cursor:pointer; font-weight:600; display:flex; gap:6px; align-items:center; }
+th button.sort:focus-visible { outline:2px solid var(--accent); }
+th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+th.num button.sort { justify-content:flex-end; }
+.filters input, .filters select { font:inherit; font-size:0.8rem; width:100%; min-width:90px; box-sizing:border-box; padding:3px 5px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; }
+.filters .pair { display:flex; flex-direction:column; gap:3px; }
+.filters label { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--muted); font-weight:400; }
+table.small { width:auto; min-width:360px; }
+.note { color:var(--muted); font-size:0.9rem; }
+.empty { padding:16px; color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>Technical Validation opportunities</h1>
+<p class="meta" id="meta"></p>
+
+<div class="tabs" role="tablist">
+  <button type="button" role="tab" id="tab-list" aria-selected="true" aria-controls="panel-list">Opportunities</button>
+  <button type="button" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats">Statistics</button>
+</div>
+
+<section id="panel-list" role="tabpanel" aria-labelledby="tab-list">
+  <div class="bar"><span id="count"></span><button type="button" class="plain" id="clear">Clear filters</button></div>
+  <div class="wrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<section id="panel-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+  <p class="note" id="statsnote"></p>
+  <div class="stats" id="cards"></div>
+  <h3>By frequency</h3>
+  <div class="wrap"><table class="small" id="freqtable"><thead></thead><tbody></tbody></table></div>
+  <h3>By target close month</h3>
+  <div class="wrap"><table class="small" id="monthtable"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<script>
+const REPORT = __REPORT_DATA__;
+(function () {
+  'use strict';
+
+  const COLS = [
+    { key: 'Id', label: 'Id', type: 'text' },
+    { key: 'PartnerOpportunityIdentifier', label: 'Partner Opportunity Id', type: 'text' },
+    { key: 'TargetCloseDate', label: 'Target close', type: 'date' },
+    { key: 'Stage', label: 'Stage', type: 'enum' },
+    { key: 'CompanyName', label: 'Customer', type: 'text' },
+    { key: 'Amount', label: 'Amount', type: 'number' },
+    { key: 'Frequency', label: 'Frequency', type: 'enum' },
+    { key: 'Yearly', label: 'Projected yearly', type: 'number', hint: 'Monthly rows only: Amount x 12' }
+  ];
+
+  // Normalise rows once. An unreadable Amount counts as 0 (see Caveat 7).
+  const ROWS = (REPORT.rows || []).map(function (r) {
+    const n = parseFloat(r.Amount);
+    const amt = Number.isFinite(n) ? n : 0;
+    const freq = String(r.Frequency == null ? '' : r.Frequency);
+    return {
+      Id: String(r.Id == null ? '' : r.Id),
+      PartnerOpportunityIdentifier: String(r.PartnerOpportunityIdentifier == null ? '' : r.PartnerOpportunityIdentifier),
+      TargetCloseDate: String(r.TargetCloseDate == null ? '' : r.TargetCloseDate),
+      Stage: String(r.Stage == null ? '' : r.Stage),
+      CompanyName: String(r.CompanyName == null ? '' : r.CompanyName),
+      Amount: amt,
+      Frequency: freq,
+      Yearly: freq === 'Monthly' ? amt * 12 : null
+    };
+  });
+
+  const money = function (n) {
+    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  function el(tag, attrs) {
+    const e = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]);
+    });
+    for (let i = 2; i < arguments.length; i++) e.appendChild(arguments[i]);
+    return e;
+  }
+
+  // ---- state -------------------------------------------------------------
+  const filters = {};
+  function resetFilters() {
+    COLS.forEach(function (c) {
+      filters[c.key] = c.type === 'date' ? { from: '', to: '' }
+                     : c.type === 'number' ? { min: '', max: '' }
+                     : { v: '' };
+    });
+  }
+  resetFilters();
+  const sort = { key: 'TargetCloseDate', dir: 1 };
+
+  function passes(row) {
+    return COLS.every(function (c) {
+      const f = filters[c.key], v = row[c.key];
+      if (c.type === 'text') return !f.v || v.toLowerCase().indexOf(f.v.toLowerCase()) !== -1;
+      if (c.type === 'enum') return !f.v || v === f.v;
+      if (c.type === 'date') return (!f.from || v >= f.from) && (!f.to || v <= f.to);
+      if (c.type === 'number') {
+        const lo = parseFloat(f.min), hi = parseFloat(f.max);
+        if (v === null) return Number.isNaN(lo) && Number.isNaN(hi);
+        return (Number.isNaN(lo) || v >= lo) && (Number.isNaN(hi) || v <= hi);
+      }
+      return true;
+    });
+  }
+
+  function visibleRows() {
+    const col = COLS.filter(function (c) { return c.key === sort.key; })[0];
+    return ROWS.filter(passes).sort(function (a, b) {
+      let r;
+      if (col.type === 'number') {
+        const x = a[sort.key], y = b[sort.key];
+        if (x === null || y === null) return x === y ? 0 : (x === null ? 1 : -1);
+        r = x - y;
+      }
+      else r = a[sort.key].localeCompare(b[sort.key], undefined, { numeric: true, sensitivity: 'base' });
+      return r * sort.dir;
+    });
+  }
+
+  // ---- list tab ----------------------------------------------------------
+  const thead = document.querySelector('#grid thead');
+  const tbody = document.querySelector('#grid tbody');
+
+  function buildHeader() {
+    const sorts = el('tr', { 'class': 'sorts' });
+    const flt = el('tr', { 'class': 'filters' });
+    COLS.forEach(function (c) {
+      const cls = c.type === 'number' ? 'num' : '';
+      const btn = el('button', { type: 'button', 'class': 'sort', 'data-key': c.key });
+      btn.appendChild(el('span', { text: c.label }));
+      btn.appendChild(el('span', { 'class': 'arrow', 'aria-hidden': 'true' }));
+      btn.addEventListener('click', function () {
+        if (sort.key === c.key) sort.dir = -sort.dir; else { sort.key = c.key; sort.dir = 1; }
+        refresh();
+      });
+      const thAttrs = { 'class': cls, scope: 'col', 'aria-sort': 'none', 'data-key': c.key };
+      if (c.hint) thAttrs.title = c.hint;
+      sorts.appendChild(el('th', thAttrs, btn));
+      flt.appendChild(el('th', { 'class': cls }, buildControl(c)));
+    });
+    thead.appendChild(sorts);
+    thead.appendChild(flt);
+  }
+
+  function buildControl(c) {
+    const wrap = el('div', { 'class': 'pair' });
+    const bind = function (input, group, prop) {
+      input.addEventListener('input', function () { filters[c.key][prop] = input.value; refresh(true); });
+      input.setAttribute('data-filter', c.key + '.' + prop);
+      return input;
+    };
+    if (c.type === 'text') {
+      wrap.appendChild(bind(el('input', { type: 'search', placeholder: 'contains...', 'aria-label': c.label + ' contains' }), null, 'v'));
+    } else if (c.type === 'enum') {
+      const sel = el('select', { 'aria-label': c.label + ' filter' });
+      sel.appendChild(el('option', { value: '', text: 'All' }));
+      Array.from(new Set(ROWS.map(function (r) { return r[c.key]; }))).sort().forEach(function (v) {
+        sel.appendChild(el('option', { value: v, text: v === '' ? '(blank)' : v }));
+      });
+      wrap.appendChild(bind(sel, null, 'v'));
+    } else if (c.type === 'date') {
+      wrap.appendChild(el('label', {}, el('span', { text: 'from' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' from' }), null, 'from')));
+      wrap.appendChild(el('label', {}, el('span', { text: 'to' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' to' }), null, 'to')));
+    } else if (c.type === 'number') {
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'min', 'aria-label': c.label + ' minimum' }), null, 'min'));
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'max', 'aria-label': c.label + ' maximum' }), null, 'max'));
+    }
+    return wrap;
+  }
+
+  function renderList(rows) {
+    tbody.textContent = '';
+    if (!rows.length) {
+      tbody.appendChild(el('tr', {}, el('td', { colspan: String(COLS.length), 'class': 'empty', text: 'No opportunities match the current filters.' })));
+    }
+    rows.forEach(function (r) {
+      const tr = el('tr');
+      COLS.forEach(function (c) {
+        const isNum = c.type === 'number';
+        tr.appendChild(el('td', { 'class': isNum ? 'num' : '', text: isNum ? (r[c.key] === null ? '\u2013' : money(r[c.key])) : r[c.key] }));
+      });
+      tbody.appendChild(tr);
+    });
+    thead.querySelectorAll('tr.sorts th').forEach(function (th) {
+      const active = th.getAttribute('data-key') === sort.key;
+      th.setAttribute('aria-sort', active ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none');
+      th.querySelector('.arrow').textContent = active ? (sort.dir === 1 ? '\u25B2' : '\u25BC') : '';
+    });
+    const filtered = rows.length !== ROWS.length;
+    document.getElementById('count').textContent =
+      'Showing ' + rows.length + ' of ' + ROWS.length + ' opportunities' + (filtered ? ' (filtered)' : '');
+  }
+
+  // ---- statistics tab ----------------------------------------------------
+  function renderStats(rows) {
+    const note = document.getElementById('statsnote');
+    note.textContent = rows.length === ROWS.length
+      ? 'Statistics for all ' + ROWS.length + ' opportunities. Apply filters on the Opportunities tab and these figures update.'
+      : 'Statistics for the ' + rows.length + ' of ' + ROWS.length + ' opportunities that match the filters on the Opportunities tab.';
+
+    const dates = rows.map(function (r) { return r.TargetCloseDate; }).filter(Boolean).sort();
+    const byFreq = {};
+    rows.forEach(function (r) { (byFreq[r.Frequency || 'Unspecified'] = byFreq[r.Frequency || 'Unspecified'] || []).push(r.Amount); });
+    const freqs = Object.keys(byFreq).sort();
+
+    const cards = document.getElementById('cards');
+    cards.textContent = '';
+    const addCard = function (label, value) {
+      cards.appendChild(el('div', { 'class': 'card' }, el('div', { 'class': 'label', text: label }), el('div', { 'class': 'value', text: value })));
+    };
+    addCard('Opportunities', String(rows.length));
+    addCard('Distinct customers', String(new Set(rows.map(function (r) { return r.CompanyName; })).size));
+    addCard('Earliest close', dates.length ? dates[0] : 'n/a');
+    addCard('Latest close', dates.length ? dates[dates.length - 1] : 'n/a');
+    freqs.forEach(function (f) {
+      addCard('Total expected spend (' + f + ')', money(byFreq[f].reduce(function (a, b) { return a + b; }, 0)));
+    });
+
+    const yearly = rows.filter(function (r) { return r.Yearly !== null; });
+    if (yearly.length) addCard('Projected yearly (Monthly rows)', money(yearly.reduce(function (a, r) { return a + r.Yearly; }, 0)));
+
+    fillTable('freqtable',
+      ['Frequency', 'Count', 'Total', 'Average', 'Lowest', 'Highest', 'Projected yearly total'],
+      freqs.map(function (f) {
+        const a = byFreq[f], t = a.reduce(function (x, y) { return x + y; }, 0);
+        return [f, String(a.length), money(t), money(t / a.length), money(Math.min.apply(null, a)), money(Math.max.apply(null, a)), f === 'Monthly' ? money(t * 12) : '\u2013'];
+      }));
+
+    const byMonth = {};
+    rows.forEach(function (r) { const m = (r.TargetCloseDate || 'n/a').slice(0, 7); byMonth[m] = (byMonth[m] || 0) + 1; });
+    fillTable('monthtable', ['Month', 'Opportunities'],
+      Object.keys(byMonth).sort().map(function (m) { return [m, String(byMonth[m])]; }));
+  }
+
+  function fillTable(id, heads, data) {
+    const t = document.getElementById(id);
+    const th = t.querySelector('thead'), tb = t.querySelector('tbody');
+    th.textContent = ''; tb.textContent = '';
+    const hr = el('tr');
+    heads.forEach(function (h, i) { hr.appendChild(el('th', { 'class': i ? 'num' : '', text: h })); });
+    th.appendChild(hr);
+    if (!data.length) tb.appendChild(el('tr', {}, el('td', { colspan: String(heads.length), 'class': 'empty', text: 'No data for the current filters.' })));
+    data.forEach(function (row) {
+      const tr = el('tr');
+      row.forEach(function (v, i) { tr.appendChild(el('td', { 'class': i ? 'num' : '', text: v })); });
+      tb.appendChild(tr);
+    });
+  }
+
+  // ---- wiring ------------------------------------------------------------
+  function refresh() {
+    const rows = visibleRows();
+    renderList(rows);
+    renderStats(rows);
+  }
+
+  document.getElementById('clear').addEventListener('click', function () {
+    resetFilters();
+    document.querySelectorAll('[data-filter]').forEach(function (i) { i.value = ''; });
+    refresh();
+  });
+
+  const tabs = [['tab-list', 'panel-list'], ['tab-stats', 'panel-stats']];
+  tabs.forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener('click', function () {
+      tabs.forEach(function (p) {
+        const on = p[0] === pair[0];
+        document.getElementById(p[0]).setAttribute('aria-selected', String(on));
+        document.getElementById(p[1]).hidden = !on;
+      });
+    });
+  });
+
+  const m = REPORT.meta || {};
+  document.getElementById('meta').textContent =
+    'Approved, targeting AWS, closing on or after ' + (m.earliestClose || 'n/a') +
+    ' \u00B7 Data snapshot: ' + (m.snapshot || 'n/a') + ' \u00B7 Report generated: ' + (m.generated || 'n/a');
+
+  buildHeader();
+  refresh();
+})();
+</script>
+</body>
+</html>

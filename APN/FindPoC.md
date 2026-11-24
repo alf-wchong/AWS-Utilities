@@ -6,7 +6,7 @@
 
 ## Why export once and filter locally?
 
-A fair question: if the AWS CLI can filter, why not ask AWS for exactly the report we want? The approach here is to make one broad export, keep it as a file, and slice it locally with jq. 
+A fair question: if the AWS CLI can filter, why not ask AWS for exactly the report we want? The approach here is to make one broad export, keep it as a file, and slice it locally with jq. The reasoning, with the facts checked against AWS documentation as of 2026-11-24:
 
 ### What `list-opportunities` can and cannot filter server-side
 
@@ -75,6 +75,7 @@ Each matching opportunity is reported with these attributes:
 | CompanyName | `Customer.Account.CompanyName` |
 | Amount | `Project.ExpectedCustomerSpend[].Amount` |
 | Frequency | `Project.ExpectedCustomerSpend[].Frequency` |
+| Projected yearly (derived, HTML report only) | `Amount` x 12, for rows whose `Frequency` is `Monthly` |
 
 ---
 
@@ -82,7 +83,8 @@ Each matching opportunity is reported with these attributes:
 
 - AWS CLI v2 with the `partnercentral-selling` service available
 - Credentials with permission to call `partnercentral-selling:ListOpportunities` for the AWS catalog
-- `jq` installed (works with 1.6 and later)
+- `jq` installed (1.6 or later; the HTML step uses `--rawfile`, which needs 1.6)
+- A web browser to open the HTML report
 - Region: `us-east-1`
 
 ---
@@ -169,82 +171,39 @@ jq 'length' file.json                                  # for a bare top-level ar
 
 ## 5. Step 3: Generate the HTML report
 
-This step turns `report.json` (the output of Step 2) into a single, self-contained HTML file with statistics at the top and the bottom. The transformation is done with jq as well, so no new tools are required.
+This step turns `report.json` into a single, self-contained, interactive HTML file with two tabs: a sortable, filterable list of opportunities, and a statistics tab that recalculates from whatever the filters show.
+
+**Requires:**
+
+- `report.json` from Step 2 (the filtered array). Without it, jq fails with "Could not open report.json", or, worse, silently builds a report from an old file.
+- `EARLIEST_CLOSE_DATE` set in the current terminal session, to the same value used in Step 2. It is an ordinary shell variable, so no `export` is needed, but it disappears when you open a new terminal. If it is unset, the header shows a blank cutoff. You may type the literal date in place of `"$EARLIEST_CLOSE_DATE"` in the run command if you prefer.
 
 ### What the report contains
 
 | Part | Content |
 |------|---------|
 | Header | Title, earliest close date used, data snapshot time, report generation time |
-| Top statistics | Summary cards: number of opportunities, distinct customers, earliest and latest target close date, and total expected spend per `Frequency` |
-| Detail table | One row per opportunity, sorted by target close date then company name, with the seven report fields |
-| Bottom statistics | The same summary cards repeated, plus a breakdown by `Frequency` (count, total, average, lowest, highest) and a count of opportunities per close month |
+| Tab 1, Opportunities | Table of all opportunities with the seven report fields plus Projected yearly. Every column sorts, and every column has a filter control suited to its datatype. A count line shows "Showing X of Y", and a "Clear filters" button resets everything |
+| Tab 2, Statistics | Summary cards, a by-frequency table and a by-close-month table, all computed from the rows that pass the filters on Tab 1 |
 
 Properties of the output file:
 
-- One file, no external resources (no CDN, fonts or scripts), so it opens offline and can be attached to an email.
+- One file, no external resources (no CDN, fonts or libraries), so it opens offline.
+- The data is embedded in the page as JSON, and the browser draws the tables with JavaScript. JavaScript must be enabled.
 - Light and dark mode follow the viewer's system setting.
-- All text from the data is HTML-escaped, so a company name such as `A & B <Corp>` cannot break the page.
-- `Amount` is shown as a number with thousands separators and two decimals.
+- All data is inserted as plain text, so a company name such as `A & B <Corp>` or one containing `</script>` cannot break the page.
 
-### 5a. Save the jq program
+### 5a. Save the page template
 
-Save this once as `report.jq`. It does not need editing between runs, because every changing value is passed in as an argument.
+Save this once as `report.template.html`, in the same folder as `report.json`. It holds the page layout and all the JavaScript. The text `__REPORT_DATA__` is a placeholder that jq replaces with the data, so it must appear exactly once and must not be edited.
 
 ```bash
-cat > report.jq << 'EOF'
-def esc: tostring | @html;
-def group3: if length <= 3 then . else (.[:-3] | group3) + "," + .[-3:] end;
-def money:
-  (. * 100 | round) as $c
-  | ($c / 100 | floor) as $d
-  | ($c % 100) as $r
-  | ($d | tostring | group3) + "." + (if $r < 10 then "0" else "" end) + ($r | tostring);
-def card($label; $value):
-  "<div class='card'><div class='label'>\($label | esc)</div><div class='value'>\($value | esc)</div></div>";
-
-map(. + {AmountNum: ((.Amount | tonumber?) // 0)}) as $rows
-| ($rows | length) as $n
-| ($rows | map(.CompanyName) | unique | length) as $customers
-| ($rows | group_by(.Frequency) | map({
-    freq: (.[0].Frequency // "Unspecified"),
-    count: length,
-    total: (map(.AmountNum) | add),
-    avg: ((map(.AmountNum) | add) / length),
-    lowest: (map(.AmountNum) | min),
-    highest: (map(.AmountNum) | max)
-  })) as $byfreq
-| ($rows | group_by((.TargetCloseDate // "n/a")[0:7]) | map({
-    month: ((.[0].TargetCloseDate // "n/a")[0:7]),
-    count: length
-  })) as $bymonth
-| (
-    card("Opportunities"; $n)
-    + card("Distinct customers"; $customers)
-    + card("Earliest close"; ($rows | map(.TargetCloseDate) | min // "n/a"))
-    + card("Latest close"; ($rows | map(.TargetCloseDate) | max // "n/a"))
-    + ($byfreq | map(card("Total expected spend (\(.freq))"; (.total | money))) | join(""))
-  ) as $summary
-| (
-    if $n == 0 then
-      "<tr><td colspan='7'>No opportunities matched the criteria.</td></tr>"
-    else
-      $rows | sort_by(.TargetCloseDate, .CompanyName) | map(
-        "<tr><td>\(.Id | esc)</td><td>\(.PartnerOpportunityIdentifier | esc)</td><td>\(.TargetCloseDate | esc)</td><td>\(.Stage | esc)</td><td>\(.CompanyName | esc)</td><td class='num'>\(.AmountNum | money)</td><td>\(.Frequency | esc)</td></tr>"
-      ) | join("\n")
-    end
-  ) as $tbody
-| ($byfreq | map(
-    "<tr><td>\(.freq | esc)</td><td class='num'>\(.count)</td><td class='num'>\(.total | money)</td><td class='num'>\(.avg | money)</td><td class='num'>\(.lowest | money)</td><td class='num'>\(.highest | money)</td></tr>"
-  ) | join("\n")) as $freqrows
-| ($bymonth | map(
-    "<tr><td>\(.month | esc)</td><td class='num'>\(.count)</td></tr>"
-  ) | join("\n")) as $monthrows
-| "<!DOCTYPE html>
-<html lang='en'>
+cat > report.template.html << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset='utf-8'>
-<meta name='viewport' content='width=device-width, initial-scale=1'>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Technical Validation opportunities</title>
 <style>
 :root { color-scheme: light dark; --bg:#ffffff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d1d9e0; --accent:#0969da; }
@@ -253,72 +212,352 @@ map(. + {AmountNum: ((.Amount | tonumber?) // 0)}) as $rows
 }
 body { background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; margin:0; padding:24px; line-height:1.45; }
 h1 { margin:0 0 4px; font-size:1.5rem; }
-h2 { margin:32px 0 12px; font-size:1.2rem; border-bottom:1px solid var(--line); padding-bottom:6px; }
-h3 { margin:20px 0 8px; font-size:1rem; color:var(--muted); }
+h3 { margin:24px 0 8px; font-size:1rem; color:var(--muted); }
 .meta { color:var(--muted); font-size:0.9rem; margin:0 0 16px; }
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+.tabs button { background:none; border:1px solid transparent; border-bottom:none; color:var(--muted); padding:8px 16px; font:inherit; cursor:pointer; border-radius:6px 6px 0 0; }
+.tabs button[aria-selected='true'] { color:var(--fg); background:var(--card); border-color:var(--line); font-weight:600; }
+.bar { display:flex; align-items:center; gap:12px; margin-bottom:8px; color:var(--muted); font-size:0.9rem; }
+button.plain { font:inherit; font-size:0.85rem; padding:3px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
 .stats { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:150px; }
 .label { color:var(--muted); font-size:0.8rem; }
 .value { color:var(--accent); font-size:1.4rem; font-weight:600; }
 .wrap { overflow-x:auto; }
 table { border-collapse:collapse; width:100%; font-size:0.9rem; }
-th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
-th { background:var(--card); position:sticky; top:0; }
-td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:top; }
+thead th { background:var(--card); }
+thead tr.sorts th { position:sticky; top:0; z-index:1; }
+th button.sort { all:unset; cursor:pointer; font-weight:600; display:flex; gap:6px; align-items:center; }
+th button.sort:focus-visible { outline:2px solid var(--accent); }
+th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+th.num button.sort { justify-content:flex-end; }
+.filters input, .filters select { font:inherit; font-size:0.8rem; width:100%; min-width:90px; box-sizing:border-box; padding:3px 5px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; }
+.filters .pair { display:flex; flex-direction:column; gap:3px; }
+.filters label { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--muted); font-weight:400; }
 table.small { width:auto; min-width:360px; }
+.note { color:var(--muted); font-size:0.9rem; }
+.empty { padding:16px; color:var(--muted); }
 </style>
 </head>
 <body>
 <h1>Technical Validation opportunities</h1>
-<p class='meta'>Approved, targeting AWS, closing on or after \($earliest_close | esc) &middot; Data snapshot: \($snapshot | esc) &middot; Report generated: \($generated | esc)</p>
+<p class="meta" id="meta"></p>
 
-<section class='stats'>\($summary)</section>
-
-<div class='wrap'>
-<table>
-<thead><tr><th>Id</th><th>Partner Opportunity Id</th><th>Target close</th><th>Stage</th><th>Customer</th><th class='num'>Amount</th><th>Frequency</th></tr></thead>
-<tbody>
-\($tbody)
-</tbody>
-</table>
+<div class="tabs" role="tablist">
+  <button type="button" role="tab" id="tab-list" aria-selected="true" aria-controls="panel-list">Opportunities</button>
+  <button type="button" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats">Statistics</button>
 </div>
 
-<h2>Statistics</h2>
-<section class='stats'>\($summary)</section>
+<section id="panel-list" role="tabpanel" aria-labelledby="tab-list">
+  <div class="bar"><span id="count"></span><button type="button" class="plain" id="clear">Clear filters</button></div>
+  <div class="wrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+</section>
 
-<h3>By frequency</h3>
-<div class='wrap'>
-<table class='small'>
-<thead><tr><th>Frequency</th><th class='num'>Count</th><th class='num'>Total</th><th class='num'>Average</th><th class='num'>Lowest</th><th class='num'>Highest</th></tr></thead>
-<tbody>
-\($freqrows)
-</tbody>
-</table>
-</div>
+<section id="panel-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+  <p class="note" id="statsnote"></p>
+  <div class="stats" id="cards"></div>
+  <h3>By frequency</h3>
+  <div class="wrap"><table class="small" id="freqtable"><thead></thead><tbody></tbody></table></div>
+  <h3>By target close month</h3>
+  <div class="wrap"><table class="small" id="monthtable"><thead></thead><tbody></tbody></table></div>
+</section>
 
-<h3>By target close month</h3>
-<div class='wrap'>
-<table class='small'>
-<thead><tr><th>Month</th><th class='num'>Opportunities</th></tr></thead>
-<tbody>
-\($monthrows)
-</tbody>
-</table>
-</div>
+<script>
+const REPORT = __REPORT_DATA__;
+(function () {
+  'use strict';
+
+  const COLS = [
+    { key: 'Id', label: 'Id', type: 'text' },
+    { key: 'PartnerOpportunityIdentifier', label: 'Partner Opportunity Id', type: 'text' },
+    { key: 'TargetCloseDate', label: 'Target close', type: 'date' },
+    { key: 'Stage', label: 'Stage', type: 'enum' },
+    { key: 'CompanyName', label: 'Customer', type: 'text' },
+    { key: 'Amount', label: 'Amount', type: 'number' },
+    { key: 'Frequency', label: 'Frequency', type: 'enum' },
+    { key: 'Yearly', label: 'Projected yearly', type: 'number', hint: 'Monthly rows only: Amount x 12' }
+  ];
+
+  // Normalise rows once. An unreadable Amount counts as 0 (see Caveat 7).
+  const ROWS = (REPORT.rows || []).map(function (r) {
+    const n = parseFloat(r.Amount);
+    const amt = Number.isFinite(n) ? n : 0;
+    const freq = String(r.Frequency == null ? '' : r.Frequency);
+    return {
+      Id: String(r.Id == null ? '' : r.Id),
+      PartnerOpportunityIdentifier: String(r.PartnerOpportunityIdentifier == null ? '' : r.PartnerOpportunityIdentifier),
+      TargetCloseDate: String(r.TargetCloseDate == null ? '' : r.TargetCloseDate),
+      Stage: String(r.Stage == null ? '' : r.Stage),
+      CompanyName: String(r.CompanyName == null ? '' : r.CompanyName),
+      Amount: amt,
+      Frequency: freq,
+      Yearly: freq === 'Monthly' ? amt * 12 : null
+    };
+  });
+
+  const money = function (n) {
+    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  function el(tag, attrs) {
+    const e = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]);
+    });
+    for (let i = 2; i < arguments.length; i++) e.appendChild(arguments[i]);
+    return e;
+  }
+
+  // ---- state -------------------------------------------------------------
+  const filters = {};
+  function resetFilters() {
+    COLS.forEach(function (c) {
+      filters[c.key] = c.type === 'date' ? { from: '', to: '' }
+                     : c.type === 'number' ? { min: '', max: '' }
+                     : { v: '' };
+    });
+  }
+  resetFilters();
+  const sort = { key: 'TargetCloseDate', dir: 1 };
+
+  function passes(row) {
+    return COLS.every(function (c) {
+      const f = filters[c.key], v = row[c.key];
+      if (c.type === 'text') return !f.v || v.toLowerCase().indexOf(f.v.toLowerCase()) !== -1;
+      if (c.type === 'enum') return !f.v || v === f.v;
+      if (c.type === 'date') return (!f.from || v >= f.from) && (!f.to || v <= f.to);
+      if (c.type === 'number') {
+        const lo = parseFloat(f.min), hi = parseFloat(f.max);
+        if (v === null) return Number.isNaN(lo) && Number.isNaN(hi);
+        return (Number.isNaN(lo) || v >= lo) && (Number.isNaN(hi) || v <= hi);
+      }
+      return true;
+    });
+  }
+
+  function visibleRows() {
+    const col = COLS.filter(function (c) { return c.key === sort.key; })[0];
+    return ROWS.filter(passes).sort(function (a, b) {
+      let r;
+      if (col.type === 'number') {
+        const x = a[sort.key], y = b[sort.key];
+        if (x === null || y === null) return x === y ? 0 : (x === null ? 1 : -1);
+        r = x - y;
+      }
+      else r = a[sort.key].localeCompare(b[sort.key], undefined, { numeric: true, sensitivity: 'base' });
+      return r * sort.dir;
+    });
+  }
+
+  // ---- list tab ----------------------------------------------------------
+  const thead = document.querySelector('#grid thead');
+  const tbody = document.querySelector('#grid tbody');
+
+  function buildHeader() {
+    const sorts = el('tr', { 'class': 'sorts' });
+    const flt = el('tr', { 'class': 'filters' });
+    COLS.forEach(function (c) {
+      const cls = c.type === 'number' ? 'num' : '';
+      const btn = el('button', { type: 'button', 'class': 'sort', 'data-key': c.key });
+      btn.appendChild(el('span', { text: c.label }));
+      btn.appendChild(el('span', { 'class': 'arrow', 'aria-hidden': 'true' }));
+      btn.addEventListener('click', function () {
+        if (sort.key === c.key) sort.dir = -sort.dir; else { sort.key = c.key; sort.dir = 1; }
+        refresh();
+      });
+      const thAttrs = { 'class': cls, scope: 'col', 'aria-sort': 'none', 'data-key': c.key };
+      if (c.hint) thAttrs.title = c.hint;
+      sorts.appendChild(el('th', thAttrs, btn));
+      flt.appendChild(el('th', { 'class': cls }, buildControl(c)));
+    });
+    thead.appendChild(sorts);
+    thead.appendChild(flt);
+  }
+
+  function buildControl(c) {
+    const wrap = el('div', { 'class': 'pair' });
+    const bind = function (input, group, prop) {
+      input.addEventListener('input', function () { filters[c.key][prop] = input.value; refresh(true); });
+      input.setAttribute('data-filter', c.key + '.' + prop);
+      return input;
+    };
+    if (c.type === 'text') {
+      wrap.appendChild(bind(el('input', { type: 'search', placeholder: 'contains...', 'aria-label': c.label + ' contains' }), null, 'v'));
+    } else if (c.type === 'enum') {
+      const sel = el('select', { 'aria-label': c.label + ' filter' });
+      sel.appendChild(el('option', { value: '', text: 'All' }));
+      Array.from(new Set(ROWS.map(function (r) { return r[c.key]; }))).sort().forEach(function (v) {
+        sel.appendChild(el('option', { value: v, text: v === '' ? '(blank)' : v }));
+      });
+      wrap.appendChild(bind(sel, null, 'v'));
+    } else if (c.type === 'date') {
+      wrap.appendChild(el('label', {}, el('span', { text: 'from' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' from' }), null, 'from')));
+      wrap.appendChild(el('label', {}, el('span', { text: 'to' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' to' }), null, 'to')));
+    } else if (c.type === 'number') {
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'min', 'aria-label': c.label + ' minimum' }), null, 'min'));
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'max', 'aria-label': c.label + ' maximum' }), null, 'max'));
+    }
+    return wrap;
+  }
+
+  function renderList(rows) {
+    tbody.textContent = '';
+    if (!rows.length) {
+      tbody.appendChild(el('tr', {}, el('td', { colspan: String(COLS.length), 'class': 'empty', text: 'No opportunities match the current filters.' })));
+    }
+    rows.forEach(function (r) {
+      const tr = el('tr');
+      COLS.forEach(function (c) {
+        const isNum = c.type === 'number';
+        tr.appendChild(el('td', { 'class': isNum ? 'num' : '', text: isNum ? (r[c.key] === null ? '\u2013' : money(r[c.key])) : r[c.key] }));
+      });
+      tbody.appendChild(tr);
+    });
+    thead.querySelectorAll('tr.sorts th').forEach(function (th) {
+      const active = th.getAttribute('data-key') === sort.key;
+      th.setAttribute('aria-sort', active ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none');
+      th.querySelector('.arrow').textContent = active ? (sort.dir === 1 ? '\u25B2' : '\u25BC') : '';
+    });
+    const filtered = rows.length !== ROWS.length;
+    document.getElementById('count').textContent =
+      'Showing ' + rows.length + ' of ' + ROWS.length + ' opportunities' + (filtered ? ' (filtered)' : '');
+  }
+
+  // ---- statistics tab ----------------------------------------------------
+  function renderStats(rows) {
+    const note = document.getElementById('statsnote');
+    note.textContent = rows.length === ROWS.length
+      ? 'Statistics for all ' + ROWS.length + ' opportunities. Apply filters on the Opportunities tab and these figures update.'
+      : 'Statistics for the ' + rows.length + ' of ' + ROWS.length + ' opportunities that match the filters on the Opportunities tab.';
+
+    const dates = rows.map(function (r) { return r.TargetCloseDate; }).filter(Boolean).sort();
+    const byFreq = {};
+    rows.forEach(function (r) { (byFreq[r.Frequency || 'Unspecified'] = byFreq[r.Frequency || 'Unspecified'] || []).push(r.Amount); });
+    const freqs = Object.keys(byFreq).sort();
+
+    const cards = document.getElementById('cards');
+    cards.textContent = '';
+    const addCard = function (label, value) {
+      cards.appendChild(el('div', { 'class': 'card' }, el('div', { 'class': 'label', text: label }), el('div', { 'class': 'value', text: value })));
+    };
+    addCard('Opportunities', String(rows.length));
+    addCard('Distinct customers', String(new Set(rows.map(function (r) { return r.CompanyName; })).size));
+    addCard('Earliest close', dates.length ? dates[0] : 'n/a');
+    addCard('Latest close', dates.length ? dates[dates.length - 1] : 'n/a');
+    freqs.forEach(function (f) {
+      addCard('Total expected spend (' + f + ')', money(byFreq[f].reduce(function (a, b) { return a + b; }, 0)));
+    });
+
+    const yearly = rows.filter(function (r) { return r.Yearly !== null; });
+    if (yearly.length) addCard('Projected yearly (Monthly rows)', money(yearly.reduce(function (a, r) { return a + r.Yearly; }, 0)));
+
+    fillTable('freqtable',
+      ['Frequency', 'Count', 'Total', 'Average', 'Lowest', 'Highest', 'Projected yearly total'],
+      freqs.map(function (f) {
+        const a = byFreq[f], t = a.reduce(function (x, y) { return x + y; }, 0);
+        return [f, String(a.length), money(t), money(t / a.length), money(Math.min.apply(null, a)), money(Math.max.apply(null, a)), f === 'Monthly' ? money(t * 12) : '\u2013'];
+      }));
+
+    const byMonth = {};
+    rows.forEach(function (r) { const m = (r.TargetCloseDate || 'n/a').slice(0, 7); byMonth[m] = (byMonth[m] || 0) + 1; });
+    fillTable('monthtable', ['Month', 'Opportunities'],
+      Object.keys(byMonth).sort().map(function (m) { return [m, String(byMonth[m])]; }));
+  }
+
+  function fillTable(id, heads, data) {
+    const t = document.getElementById(id);
+    const th = t.querySelector('thead'), tb = t.querySelector('tbody');
+    th.textContent = ''; tb.textContent = '';
+    const hr = el('tr');
+    heads.forEach(function (h, i) { hr.appendChild(el('th', { 'class': i ? 'num' : '', text: h })); });
+    th.appendChild(hr);
+    if (!data.length) tb.appendChild(el('tr', {}, el('td', { colspan: String(heads.length), 'class': 'empty', text: 'No data for the current filters.' })));
+    data.forEach(function (row) {
+      const tr = el('tr');
+      row.forEach(function (v, i) { tr.appendChild(el('td', { 'class': i ? 'num' : '', text: v })); });
+      tb.appendChild(tr);
+    });
+  }
+
+  // ---- wiring ------------------------------------------------------------
+  function refresh() {
+    const rows = visibleRows();
+    renderList(rows);
+    renderStats(rows);
+  }
+
+  document.getElementById('clear').addEventListener('click', function () {
+    resetFilters();
+    document.querySelectorAll('[data-filter]').forEach(function (i) { i.value = ''; });
+    refresh();
+  });
+
+  const tabs = [['tab-list', 'panel-list'], ['tab-stats', 'panel-stats']];
+  tabs.forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener('click', function () {
+      tabs.forEach(function (p) {
+        const on = p[0] === pair[0];
+        document.getElementById(p[0]).setAttribute('aria-selected', String(on));
+        document.getElementById(p[1]).hidden = !on;
+      });
+    });
+  });
+
+  const m = REPORT.meta || {};
+  document.getElementById('meta').textContent =
+    'Approved, targeting AWS, closing on or after ' + (m.earliestClose || 'n/a') +
+    ' \u00B7 Data snapshot: ' + (m.snapshot || 'n/a') + ' \u00B7 Report generated: ' + (m.generated || 'n/a');
+
+  buildHeader();
+  refresh();
+})();
+</script>
 </body>
 </html>
-"
 EOF
 ```
 
-### 5b. Run it
+### 5b. Save the jq program
+
+Save this once as `report-tabs.jq`. It embeds the data into the template, and it needs no editing between runs because every changing value is passed in as an argument. It replaces the earlier `report.jq` (the version that built static HTML), which can be deleted.
 
 ```bash
+cat > report-tabs.jq << 'EOF'
+({ meta: { earliestClose: $earliest_close, snapshot: $snapshot, generated: $generated }, rows: . }
+  | tojson
+  | split("<")
+  | join("\\u003c")) as $json
+| $tpl
+| split("__REPORT_DATA__")
+| join($json)
+EOF
+```
+
+How it works:
+
+| Piece | Explanation |
+|-------|-------------|
+| `{ meta: {...}, rows: . }` | Wraps the filtered array and the three header values into one object |
+| `tojson` | Serializes that object as JSON text |
+| `split("<") \| join("\\u003c")` | Replaces every `<` with the JSON escape `\u003c`, so data can never close the `<script>` tag early. The browser reads it back as `<` |
+| `$tpl` | The template text, passed in with `--rawfile` |
+| `split("__REPORT_DATA__") \| join($json)` | Swaps the placeholder for the embedded data |
+
+### 5c. Run it
+
+```bash
+# EARLIEST_CLOSE_DATE must already be set, to the same value used in Step 2
+SNAPSHOT_TIME=$(command date -u -r PQT-Opptys.json '+%Y-%m-%d %H:%M UTC')
+GENERATED_TIME=$(command date -u '+%Y-%m-%d %H:%M UTC')
+echo "$EARLIEST_CLOSE_DATE | $SNAPSHOT_TIME | $GENERATED_TIME"   # all three must be non-empty
+
 jq -r \
+  --rawfile tpl report.template.html \
   --arg earliest_close "$EARLIEST_CLOSE_DATE" \
-  --arg snapshot  "$(date -u -r PQT-Opptys.json +'%Y-%m-%d %H:%M UTC')" \
-  --arg generated "$(date -u +'%Y-%m-%d %H:%M UTC')" \
-  -f report.jq report.json > report.html
+  --arg snapshot  "$SNAPSHOT_TIME" \
+  --arg generated "$GENERATED_TIME" \
+  -f report-tabs.jq report.json > report.html
 ```
 
 Then open `report.html` in a browser (for example `explorer.exe report.html` from WSL, or `xdg-open report.html` on Linux).
@@ -326,24 +565,44 @@ Then open `report.html` in a browser (for example `explorer.exe report.html` fro
 | Argument | Purpose |
 |----------|---------|
 | `-r` | Raw output, so the HTML is written as text rather than as a quoted JSON string |
+| `--rawfile tpl` | Reads `report.template.html` into the jq variable `$tpl` |
 | `--arg earliest_close` | Shown in the header, so the report states the cutoff it was built with |
-| `--arg snapshot` | Modification time of the dump, used as the data snapshot time |
+| `--arg snapshot` | Data snapshot time (the dump file's modification time, see Caveat 8) |
 | `--arg generated` | Time the report was built |
-| `-f report.jq` | Reads the program from the file |
+| `-f report-tabs.jq` | Reads the program from the file |
 | `report.json` | Input: the filtered array from Step 2 |
 
-### 5c. Statistics definitions
+The `echo` line is a safety check. If any of the three values is blank, fix that before trusting the header. `command date` is used instead of plain `date` to bypass any shell alias (see Caveat 11).
+
+### 5d. Using the report
+
+Filter controls on Tab 1:
+
+| Column | Type | Control |
+|--------|------|---------|
+| Id, Partner Opportunity Id, Customer | Text | "Contains" box, case-insensitive |
+| Target close | Date | From and to date pickers |
+| Stage, Frequency | Category | Dropdown of the values present in the data |
+| Amount, Projected yearly | Number | Minimum and maximum boxes |
+
+- Click a column header to sort ascending, and click again for descending. Id sorts naturally (O2 before O10).
+- Filters combine: a row must pass every active filter.
+- Switching to the Statistics tab shows figures for the filtered rows only. A note at its top states how many of the total rows are covered.
+- Amount filters mix frequencies, because Amount is in whatever unit its row's `Frequency` says. Combine with the Frequency dropdown for a meaningful range.
+
+### 5e. Statistics definitions
 
 | Statistic | Definition |
 |-----------|------------|
-| Opportunities | Number of rows in `report.json` |
-| Distinct customers | Number of unique `CompanyName` values |
+| Opportunities | Number of rows passing the filters |
+| Distinct customers | Number of unique `CompanyName` values among them |
 | Earliest / latest close | Minimum and maximum `TargetCloseDate` |
 | Total expected spend (per frequency) | Sum of `Amount` for rows sharing a `Frequency`. Frequencies are never added together |
-| Average, lowest, highest | Per-frequency mean, minimum and maximum of `Amount` |
+| Projected yearly (Monthly rows) | Sum of Projected yearly over the `Monthly` rows. See Caveat 10 |
+| By frequency table | Per-frequency count, total, average, lowest and highest `Amount`, and projected yearly total (Monthly only) |
 | By target close month | Count of opportunities per `YYYY-MM` |
 
-To change which statistics appear at the top or bottom, edit `$summary` (the cards) or the "By frequency" and "By target close month" sections of the HTML template. `$summary` is reused in both places, so a change to it shows up at the top and the bottom.
+To change the page (columns, statistics, styling), edit `report.template.html` and re-run 5c. The jq program does not change.
 
 ---
 
@@ -358,14 +617,19 @@ To change which statistics appear at the top or bottom, edit `$summary` (the car
 3. **`Amount` is a string** (for example `"862.0"`). To get a number, use `(.Project.ExpectedCustomerSpend[0].Amount | tonumber)`.
 4. **Amounts are not normalized.** `Frequency` can differ between rows (for example Monthly vs. other values), so do not total the `Amount` column without converting to a common period.
 5. **Date format matters.** `EARLIEST_CLOSE_DATE` must be `YYYY-MM-DD`. A value like `05/2027` or `2027-5-1` will compare incorrectly because the comparison is a plain string comparison.
-6. **Totals are per frequency and assume a single currency.** The report fields do not include `CurrencyCode`, so the HTML totals cannot tell currencies apart. Check the dump before trusting the totals:
+6. **Totals are per frequency and assume a single currency.** The report fields do not include `CurrencyCode`, so the report's totals and projected yearly figures cannot tell currencies apart. Check the dump before trusting them:
    ```bash
    jq '[.OpportunitySummaries[].Project.ExpectedCustomerSpend[0].CurrencyCode] | unique' PQT-Opptys.json
    ```
    A single value (for example `["USD"]`) means the totals are safe.
-7. **Unreadable amounts count as 0.** If `Amount` is missing or not numeric, the HTML report treats it as 0 instead of failing, which lowers totals and averages without any warning.
-8. **Snapshot time is the file's modification time.** Copying or re-saving `PQT-Opptys.json` changes it. Keep the original file, or pass the true export time as the `snapshot` argument.
-9. **The HTML contains customer data.** It carries the same customer names and spend as the dump. Handle and share it under the same rules.
+7. **Unreadable amounts count as 0.** If `Amount` is missing or not numeric, the HTML report treats it as 0 (and its projected yearly as 0.00) instead of failing, which lowers totals and averages without any warning.
+8. **Snapshot time is the file's modification time.** Copying or re-saving `PQT-Opptys.json` changes it. Keep the original file, or set `SNAPSHOT_TIME` by hand to the true export time before running 5c.
+9. **The HTML contains customer data and scripts.** It carries the same customer names and spend as the dump, so handle and share it under the same rules. Some corporate mail gateways block or quarantine HTML attachments that contain scripts, so send a test copy before relying on email.
+10. **Projected yearly is a flat annualization.** It is `Amount` x 12, calculated only for rows whose `Frequency` is exactly `Monthly`. Other rows show an en dash and are left out of the yearly total. It is a run-rate figure, not a forecast: ramp-up, seasonality and a partial first year are not modeled. To see which frequencies occur in the dump:
+    ```bash
+    jq '[.OpportunitySummaries[].Project.ExpectedCustomerSpend[].Frequency] | group_by(.) | map({frequency: .[0], count: length})' PQT-Opptys.json
+    ```
+11. **A `date` alias breaks the timestamps.** An alias such as `alias date='date "+%a %b %d %H:%M:%S %Z %Y"'` in `~/.bashrc` makes `$(date ...)` fail with "extra operand". jq still runs, but the report header shows blank times. Fix it with `unalias date` (and remove the alias from `~/.bashrc`), or use `command date`, as 5c does.
 
 ---
 
@@ -421,12 +685,17 @@ jq '.OpportunitySummaries | length' PQT-Opptys.json
 
 # 3. Run the filter (Section 4) and write report.json / report.csv
 
-# 4. Build the HTML report (Section 5): save report.jq once, then
+# 4. Build the HTML report (Section 5). Save report.template.html (5a) and
+#    report-tabs.jq (5b) once, then:
+SNAPSHOT_TIME=$(command date -u -r PQT-Opptys.json '+%Y-%m-%d %H:%M UTC')
+GENERATED_TIME=$(command date -u '+%Y-%m-%d %H:%M UTC')
+echo "$EARLIEST_CLOSE_DATE | $SNAPSHOT_TIME | $GENERATED_TIME"   # all three non-empty
 jq -r \
+  --rawfile tpl report.template.html \
   --arg earliest_close "$EARLIEST_CLOSE_DATE" \
-  --arg snapshot  "$(date -u -r PQT-Opptys.json +'%Y-%m-%d %H:%M UTC')" \
-  --arg generated "$(date -u +'%Y-%m-%d %H:%M UTC')" \
-  -f report.jq report.json > report.html
+  --arg snapshot  "$SNAPSHOT_TIME" \
+  --arg generated "$GENERATED_TIME" \
+  -f report-tabs.jq report.json > report.html
 ```
 
 ---

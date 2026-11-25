@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Technical Validation opportunities</title>
+<style>
+:root { color-scheme: light dark; --bg:#ffffff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d1d9e0; --accent:#0969da; --onaccent:#ffffff; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d; --accent:#58a6ff; --onaccent:#0d1117; }
+}
+body { background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; margin:0; padding:24px; line-height:1.45; }
+h1 { margin:0 0 4px; font-size:1.5rem; }
+h3 { margin:24px 0 8px; font-size:1rem; color:var(--muted); }
+.meta { color:var(--muted); font-size:0.9rem; margin:0 0 16px; }
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+.tabs button { background:none; border:1px solid transparent; border-bottom:none; color:var(--muted); padding:8px 16px; font:inherit; cursor:pointer; border-radius:6px 6px 0 0; }
+.tabs button[aria-selected='true'] { color:var(--fg); background:var(--card); border-color:var(--line); font-weight:600; }
+.bar { display:flex; align-items:center; gap:12px; margin-bottom:8px; color:var(--muted); font-size:0.9rem; }
+button.plain { font:inherit; font-size:0.85rem; padding:3px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
+.stats { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; min-width:150px; }
+.label { color:var(--muted); font-size:0.8rem; }
+.value { color:var(--accent); font-size:1.4rem; font-weight:600; }
+.wrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:0.9rem; }
+th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:top; }
+thead th { background:var(--card); }
+thead tr.sorts th { position:sticky; top:0; z-index:1; }
+th button.sort { all:unset; cursor:pointer; font-weight:600; display:flex; gap:6px; align-items:center; }
+th button.sort:focus-visible { outline:2px solid var(--accent); }
+th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+th.num button.sort { justify-content:flex-end; }
+.filters input, .filters select { font:inherit; font-size:0.8rem; width:100%; min-width:90px; box-sizing:border-box; padding:3px 5px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; }
+.filters .pair { display:flex; flex-direction:column; gap:3px; }
+.filters label { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--muted); font-weight:400; }
+table.small { width:auto; min-width:360px; }
+.note { color:var(--muted); font-size:0.9rem; }
+.empty { padding:16px; color:var(--muted); }
+.colpick { position:relative; display:inline-block; }
+.colpanel { position:absolute; z-index:5; top:calc(100% + 4px); left:0; min-width:230px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 12px 10px; box-shadow:0 6px 18px rgba(0,0,0,0.18); }
+.colpanel[hidden] { display:none; }
+.colpanel .collist { display:flex; flex-direction:column; gap:2px; margin:0 0 8px; }
+.colpanel label { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:0.9rem; color:var(--fg); cursor:pointer; }
+.colpanel label:has(input:disabled) { color:var(--muted); cursor:default; }
+.colpanel .actions { display:flex; gap:8px; border-top:1px solid var(--line); padding-top:8px; }
+.msbtn { font:inherit; font-size:0.8rem; width:100%; min-width:90px; box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; gap:6px; padding:3px 6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; cursor:pointer; text-align:left; }
+.msbtn.active { border-color:var(--accent); color:var(--accent); font-weight:600; }
+.mspanel { position:fixed; z-index:20; width:290px; max-width:calc(100vw - 16px); box-sizing:border-box; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:12px; box-shadow:0 6px 18px rgba(0,0,0,0.25); }
+.mspanel[hidden] { display:none; }
+.mspanel .seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:8px; }
+.mspanel .seg button { flex:1; font:inherit; font-size:0.85rem; padding:5px 8px; border:0; background:var(--bg); color:var(--fg); cursor:pointer; }
+.mspanel .seg button + button { border-left:1px solid var(--line); }
+.mspanel .seg button[aria-pressed='true'] { background:var(--accent); color:var(--onaccent); font-weight:600; }
+.mspanel .hint { color:var(--muted); font-size:0.8rem; margin-bottom:8px; }
+.mspanel .acts { display:flex; gap:8px; margin-bottom:6px; }
+.mspanel .mslist { max-height:260px; overflow-y:auto; display:flex; flex-direction:column; }
+.mspanel .mslist label { display:flex; align-items:center; gap:8px; padding:5px 2px; font-size:0.9rem; cursor:pointer; }
+.mspanel .mslist .t { flex:1; }
+.mspanel .mslist .n { color:var(--muted); font-variant-numeric:tabular-nums; }
+.mspanel .mslist label.zero { color:var(--muted); }
+.mspanel .mslist label.struck .t { text-decoration:line-through; }
+.mspanel .foot { border-top:1px solid var(--line); margin-top:8px; padding-top:8px; color:var(--muted); font-size:0.8rem; }
+</style>
+<style id="colstyle"></style>
+</head>
+<body>
+<h1>Technical Validation opportunities</h1>
+<p class="meta" id="meta"></p>
+
+<div class="tabs" role="tablist">
+  <button type="button" role="tab" id="tab-list" aria-selected="true" aria-controls="panel-list">Opportunities</button>
+  <button type="button" role="tab" id="tab-stats" aria-selected="false" aria-controls="panel-stats">Statistics</button>
+</div>
+
+<section id="panel-list" role="tabpanel" aria-labelledby="tab-list">
+  <div class="bar">
+    <span id="count"></span>
+    <button type="button" class="plain" id="clear">Clear filters</button>
+    <div class="colpick">
+      <button type="button" class="plain" id="colbtn" aria-expanded="false" aria-controls="colpanel">Columns</button>
+      <div class="colpanel" id="colpanel" role="group" aria-label="Choose visible columns" hidden>
+        <div class="collist" id="collist"></div>
+        <div class="actions">
+          <button type="button" class="plain" id="colall">Show all</button>
+          <button type="button" class="plain" id="coldefault">Reset to default</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<section id="panel-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+  <p class="note" id="statsnote"></p>
+  <div class="stats" id="cards"></div>
+  <h3>By frequency</h3>
+  <div class="wrap"><table class="small" id="freqtable"><thead></thead><tbody></tbody></table></div>
+  <h3>By industry</h3>
+  <div class="wrap"><table class="small" id="industrytable"><thead></thead><tbody></tbody></table></div>
+  <h3>By target close month</h3>
+  <div class="wrap"><table class="small" id="monthtable"><thead></thead><tbody></tbody></table></div>
+</section>
+
+<div class="mspanel" id="mspanel" role="dialog" aria-label="Filter" hidden></div>
+
+<script>
+const REPORT = __REPORT_DATA__;
+(function () {
+  'use strict';
+
+  const COLS = [
+    { key: 'Id', label: 'Id', type: 'text' },
+    { key: 'PartnerOpportunityIdentifier', label: 'Partner Opportunity Id', type: 'text' },
+    { key: 'TargetCloseDate', label: 'Target close', type: 'date' },
+    { key: 'Stage', label: 'Stage', type: 'enum' },
+    { key: 'AwsStage', label: 'AWS stage', type: 'enum' },
+    { key: 'CompanyName', label: 'Customer', type: 'text' },
+    { key: 'Industry', label: 'Industry', type: 'enum' },
+    { key: 'Amount', label: 'Amount', type: 'number' },
+    { key: 'Frequency', label: 'Frequency', type: 'enum' },
+    { key: 'Yearly', label: 'Projected yearly', type: 'number', hint: 'Monthly rows only: Amount x 12' }
+  ];
+
+  // Label shown for opportunities with no industry in the data (see Caveat 12).
+  const NO_INDUSTRY = 'Not provided';
+  // Label shown when no AWS stage was merged in or its lookup failed.
+  const NO_AWS_STAGE = 'Not available';
+
+  // Normalise rows once. An unreadable Amount counts as 0 (see Caveat 7).
+  const ROWS = (REPORT.rows || []).map(function (r) {
+    const n = parseFloat(r.Amount);
+    const amt = Number.isFinite(n) ? n : 0;
+    const freq = String(r.Frequency == null ? '' : r.Frequency);
+    return {
+      Id: String(r.Id == null ? '' : r.Id),
+      PartnerOpportunityIdentifier: String(r.PartnerOpportunityIdentifier == null ? '' : r.PartnerOpportunityIdentifier),
+      TargetCloseDate: String(r.TargetCloseDate == null ? '' : r.TargetCloseDate),
+      Stage: String(r.Stage == null ? '' : r.Stage),
+      AwsStage: (r.AwsStage == null || r.AwsStage === '') ? NO_AWS_STAGE : String(r.AwsStage),
+      CompanyName: String(r.CompanyName == null ? '' : r.CompanyName),
+      Industry: (r.Industry == null || r.Industry === '') ? NO_INDUSTRY : String(r.Industry),
+      Amount: amt,
+      Frequency: freq,
+      Yearly: freq === 'Monthly' ? amt * 12 : null
+    };
+  });
+
+  const money = function (n) {
+    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  function el(tag, attrs) {
+    const e = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]);
+    });
+    for (let i = 2; i < arguments.length; i++) e.appendChild(arguments[i]);
+    return e;
+  }
+
+  // ---- state -------------------------------------------------------------
+  const filters = {};
+  function resetFilters() {
+    COLS.forEach(function (c) {
+      filters[c.key] = c.type === 'date' ? { from: '', to: '' }
+                     : c.type === 'number' ? { min: '', max: '' }
+                     : c.type === 'enum' ? { mode: 'include', sel: new Set() }
+                     : { v: '' };
+    });
+  }
+  resetFilters();
+  const sort = { key: 'TargetCloseDate', dir: 1 };
+
+  // ---- column visibility -------------------------------------------------
+  // Columns shown on first load. Edit this list to change the default set.
+  const DEFAULT_VISIBLE = ['Id', 'TargetCloseDate', 'AwsStage', 'CompanyName', 'Amount', 'Yearly'];
+  const STORE_KEY = 'report.visibleColumns.v1';
+
+  function loadVisible() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+      if (Array.isArray(saved)) {
+        const ok = saved.filter(function (k) { return COLS.some(function (c) { return c.key === k; }); });
+        if (ok.length) return new Set(ok);
+      }
+    } catch (e) { /* storage unavailable or unreadable: use the defaults */ }
+    return new Set(DEFAULT_VISIBLE);
+  }
+  function saveVisible() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(Array.from(visible))); } catch (e) { /* best effort */ }
+  }
+  let visible = loadVisible();
+
+  function isFiltered(c) {
+    const f = filters[c.key];
+    if (c.type === 'date') return !!(f.from || f.to);
+    if (c.type === 'number') return f.min !== '' || f.max !== '';
+    if (c.type === 'enum') return f.sel.size > 0;
+    return !!f.v;
+  }
+  function labelOf(key) {
+    return COLS.filter(function (c) { return c.key === key; })[0].label;
+  }
+
+  function passesCol(c, row) {
+    const f = filters[c.key], v = row[c.key];
+    if (c.type === 'text') return !f.v || v.toLowerCase().indexOf(f.v.toLowerCase()) !== -1;
+    if (c.type === 'enum') return f.sel.size === 0 || (f.sel.has(v) === (f.mode === 'include'));
+    if (c.type === 'date') return (!f.from || v >= f.from) && (!f.to || v <= f.to);
+    if (c.type === 'number') {
+      const lo = parseFloat(f.min), hi = parseFloat(f.max);
+      if (v === null) return Number.isNaN(lo) && Number.isNaN(hi);
+      return (Number.isNaN(lo) || v >= lo) && (Number.isNaN(hi) || v <= hi);
+    }
+    return true;
+  }
+  function passes(row) {
+    return COLS.every(function (c) { return passesCol(c, row); });
+  }
+
+  function visibleRows() {
+    const col = COLS.filter(function (c) { return c.key === sort.key; })[0];
+    return ROWS.filter(passes).sort(function (a, b) {
+      let r;
+      if (col.type === 'number') {
+        const x = a[sort.key], y = b[sort.key];
+        if (x === null || y === null) return x === y ? 0 : (x === null ? 1 : -1);
+        r = x - y;
+      }
+      else r = a[sort.key].localeCompare(b[sort.key], undefined, { numeric: true, sensitivity: 'base' });
+      return r * sort.dir;
+    });
+  }
+
+  // ---- list tab ----------------------------------------------------------
+  const thead = document.querySelector('#grid thead');
+  const tbody = document.querySelector('#grid tbody');
+
+  function buildHeader() {
+    const sorts = el('tr', { 'class': 'sorts' });
+    const flt = el('tr', { 'class': 'filters' });
+    COLS.forEach(function (c) {
+      const cls = c.type === 'number' ? 'num' : '';
+      const btn = el('button', { type: 'button', 'class': 'sort', 'data-key': c.key });
+      btn.appendChild(el('span', { text: c.label }));
+      btn.appendChild(el('span', { 'class': 'arrow', 'aria-hidden': 'true' }));
+      btn.addEventListener('click', function () {
+        if (sort.key === c.key) sort.dir = -sort.dir; else { sort.key = c.key; sort.dir = 1; }
+        refresh();
+      });
+      const thAttrs = { 'class': cls, scope: 'col', 'aria-sort': 'none', 'data-key': c.key, 'data-col': c.key };
+      if (c.hint) thAttrs.title = c.hint;
+      sorts.appendChild(el('th', thAttrs, btn));
+      flt.appendChild(el('th', { 'class': cls, 'data-col': c.key }, buildControl(c)));
+    });
+    thead.appendChild(sorts);
+    thead.appendChild(flt);
+  }
+
+  function buildControl(c) {
+    const wrap = el('div', { 'class': 'pair' });
+    const bind = function (input, group, prop) {
+      input.addEventListener('input', function () { filters[c.key][prop] = input.value; refresh(true); });
+      input.setAttribute('data-filter', c.key + '.' + prop);
+      return input;
+    };
+    if (c.type === 'text') {
+      wrap.appendChild(bind(el('input', { type: 'search', placeholder: 'contains...', 'aria-label': c.label + ' contains' }), null, 'v'));
+    } else if (c.type === 'enum') {
+      const btn = el('button', { type: 'button', 'class': 'msbtn', 'data-col-filter': c.key, 'aria-haspopup': 'dialog', 'aria-expanded': 'false' });
+      btn.appendChild(el('span', { text: c.label + ': any' }));
+      btn.insertAdjacentHTML('beforeend', '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>');
+      btn.addEventListener('click', function () {
+        if (mselCol === c.key) closeMsel(); else openMsel(c, btn);
+      });
+      wrap.appendChild(btn);
+    } else if (c.type === 'date') {
+      wrap.appendChild(el('label', {}, el('span', { text: 'from' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' from' }), null, 'from')));
+      wrap.appendChild(el('label', {}, el('span', { text: 'to' }), bind(el('input', { type: 'date', 'aria-label': c.label + ' to' }), null, 'to')));
+    } else if (c.type === 'number') {
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'min', 'aria-label': c.label + ' minimum' }), null, 'min'));
+      wrap.appendChild(bind(el('input', { type: 'number', step: 'any', placeholder: 'max', 'aria-label': c.label + ' maximum' }), null, 'max'));
+    }
+    return wrap;
+  }
+
+  function renderList(rows) {
+    tbody.textContent = '';
+    if (!rows.length) {
+      tbody.appendChild(el('tr', {}, el('td', { colspan: String(Math.max(1, visible.size)), 'class': 'empty', text: 'No opportunities match the current filters.' })));
+    }
+    rows.forEach(function (r) {
+      const tr = el('tr');
+      COLS.forEach(function (c) {
+        const isNum = c.type === 'number';
+        tr.appendChild(el('td', { 'class': isNum ? 'num' : '', 'data-col': c.key, text: isNum ? (r[c.key] === null ? '\u2013' : money(r[c.key])) : r[c.key] }));
+      });
+      tbody.appendChild(tr);
+    });
+    thead.querySelectorAll('tr.sorts th').forEach(function (th) {
+      const active = th.getAttribute('data-key') === sort.key;
+      th.setAttribute('aria-sort', active ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none');
+      th.querySelector('.arrow').textContent = active ? (sort.dir === 1 ? '\u25B2' : '\u25BC') : '';
+    });
+    const filtered = rows.length !== ROWS.length;
+    const hiddenFilters = COLS.filter(function (c) { return !visible.has(c.key) && isFiltered(c); }).map(function (c) { return c.label; });
+    document.getElementById('count').textContent =
+      'Showing ' + rows.length + ' of ' + ROWS.length + ' opportunities' + (filtered ? ' (filtered)' : '') +
+      (hiddenFilters.length ? ' \u00B7 filtering on hidden: ' + hiddenFilters.join(', ') : '') +
+      (visible.has(sort.key) ? '' : ' \u00B7 sorted by hidden: ' + labelOf(sort.key));
+  }
+
+  // ---- statistics tab ----------------------------------------------------
+  function renderStats(rows) {
+    const note = document.getElementById('statsnote');
+    note.textContent = rows.length === ROWS.length
+      ? 'Statistics for all ' + ROWS.length + ' opportunities. Apply filters on the Opportunities tab and these figures update.'
+      : 'Statistics for the ' + rows.length + ' of ' + ROWS.length + ' opportunities that match the filters on the Opportunities tab.';
+
+    const dates = rows.map(function (r) { return r.TargetCloseDate; }).filter(Boolean).sort();
+    const byFreq = {};
+    rows.forEach(function (r) { (byFreq[r.Frequency || 'Unspecified'] = byFreq[r.Frequency || 'Unspecified'] || []).push(r.Amount); });
+    const freqs = Object.keys(byFreq).sort();
+
+    const cards = document.getElementById('cards');
+    cards.textContent = '';
+    const addCard = function (label, value) {
+      cards.appendChild(el('div', { 'class': 'card' }, el('div', { 'class': 'label', text: label }), el('div', { 'class': 'value', text: value })));
+    };
+    addCard('Opportunities', String(rows.length));
+    addCard('Distinct customers', String(new Set(rows.map(function (r) { return r.CompanyName; })).size));
+    addCard('Earliest close', dates.length ? dates[0] : 'n/a');
+    addCard('Latest close', dates.length ? dates[dates.length - 1] : 'n/a');
+    freqs.forEach(function (f) {
+      addCard('Total expected spend (' + f + ')', money(byFreq[f].reduce(function (a, b) { return a + b; }, 0)));
+    });
+
+    const yearly = rows.filter(function (r) { return r.Yearly !== null; });
+    if (yearly.length) addCard('Projected yearly (Monthly rows)', money(yearly.reduce(function (a, r) { return a + r.Yearly; }, 0)));
+
+    fillTable('freqtable',
+      ['Frequency', 'Count', 'Total', 'Average', 'Lowest', 'Highest', 'Projected yearly total'],
+      freqs.map(function (f) {
+        const a = byFreq[f], t = a.reduce(function (x, y) { return x + y; }, 0);
+        return [f, String(a.length), money(t), money(t / a.length), money(Math.min.apply(null, a)), money(Math.max.apply(null, a)), f === 'Monthly' ? money(t * 12) : '\u2013'];
+      }));
+
+    const byInd = {};
+    rows.forEach(function (r) {
+      const g = byInd[r.Industry] = byInd[r.Industry] || { n: 0, cust: new Set(), yearly: 0, hasYearly: false };
+      g.n++; g.cust.add(r.CompanyName);
+      if (r.Yearly !== null) { g.yearly += r.Yearly; g.hasYearly = true; }
+    });
+    fillTable('industrytable', ['Industry', 'Opportunities', 'Distinct customers', 'Projected yearly (Monthly rows)'],
+      Object.keys(byInd).sort(function (a, b) { return byInd[b].n - byInd[a].n || a.localeCompare(b); }).map(function (k) {
+        const g = byInd[k];
+        return [k, String(g.n), String(g.cust.size), g.hasYearly ? money(g.yearly) : '\u2013'];
+      }));
+
+    const byMonth = {};
+    rows.forEach(function (r) { const m = (r.TargetCloseDate || 'n/a').slice(0, 7); byMonth[m] = (byMonth[m] || 0) + 1; });
+    fillTable('monthtable', ['Month', 'Opportunities'],
+      Object.keys(byMonth).sort().map(function (m) { return [m, String(byMonth[m])]; }));
+  }
+
+  function fillTable(id, heads, data) {
+    const t = document.getElementById(id);
+    const th = t.querySelector('thead'), tb = t.querySelector('tbody');
+    th.textContent = ''; tb.textContent = '';
+    const hr = el('tr');
+    heads.forEach(function (h, i) { hr.appendChild(el('th', { 'class': i ? 'num' : '', text: h })); });
+    th.appendChild(hr);
+    if (!data.length) tb.appendChild(el('tr', {}, el('td', { colspan: String(heads.length), 'class': 'empty', text: 'No data for the current filters.' })));
+    data.forEach(function (row) {
+      const tr = el('tr');
+      row.forEach(function (v, i) { tr.appendChild(el('td', { 'class': i ? 'num' : '', text: v })); });
+      tb.appendChild(tr);
+    });
+  }
+
+  // ---- wiring ------------------------------------------------------------
+  function refresh() {
+    const rows = visibleRows();
+    renderList(rows);
+    renderStats(rows);
+    syncMsel();
+  }
+
+  document.getElementById('clear').addEventListener('click', function () {
+    resetFilters();
+    document.querySelectorAll('[data-filter]').forEach(function (i) { i.value = ''; });
+    refresh();
+  });
+
+  const tabs = [['tab-list', 'panel-list'], ['tab-stats', 'panel-stats']];
+  tabs.forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener('click', function () {
+      tabs.forEach(function (p) {
+        const on = p[0] === pair[0];
+        document.getElementById(p[0]).setAttribute('aria-selected', String(on));
+        document.getElementById(p[1]).hidden = !on;
+      });
+    });
+  });
+
+  const m = REPORT.meta || {};
+  document.getElementById('meta').textContent =
+    'Approved, targeting AWS, closing on or after ' + (m.earliestClose || 'n/a') +
+    ' \u00B7 Data snapshot: ' + (m.snapshot || 'n/a') + ' \u00B7 Report generated: ' + (m.generated || 'n/a');
+
+  // ---- multi-select filter for category columns -------------------------
+  // Include: keep only the ticked values. Exclude: hide the ticked values.
+  // An empty selection means no filter.
+  const STAGE_ORDER = ['Prospect', 'Qualified', 'Technical Validation', 'Business Validation', 'Committed', 'Launched', 'Closed Lost', 'Completed'];
+  const msel = document.getElementById('mspanel');
+  let mselCol = null, mselBtn = null;
+
+  function shown(v) { return v === '' ? '(blank)' : v; }
+
+  function valuesFor(key) {
+    const rank = function (v) {
+      if (v === NO_INDUSTRY || v === NO_AWS_STAGE) return 1e6;          // "not provided / available" last
+      const i = STAGE_ORDER.indexOf(v);
+      return (key === 'Stage' || key === 'AwsStage') && i !== -1 ? i : 1e5;
+    };
+    return Array.from(new Set(ROWS.map(function (r) { return r[key]; })))
+      .sort(function (a, b) { return rank(a) - rank(b) || a.localeCompare(b); });
+  }
+
+  // Row counts per value, with every OTHER active filter applied.
+  function countsFor(c) {
+    const counts = {};
+    ROWS.forEach(function (row) {
+      const ok = COLS.every(function (o) { return o.key === c.key || passesCol(o, row); });
+      if (ok) counts[row[c.key]] = (counts[row[c.key]] || 0) + 1;
+    });
+    return counts;
+  }
+
+  function renderMsel() {
+    const c = COLS.filter(function (x) { return x.key === mselCol; })[0];
+    const f = filters[c.key];
+    const focusId = (document.activeElement && msel.contains(document.activeElement))
+      ? document.activeElement.getAttribute('data-focus') : null;
+    const vals = valuesFor(c.key), counts = countsFor(c);
+    msel.textContent = '';
+    msel.setAttribute('aria-label', 'Filter ' + c.label);
+
+    const seg = el('div', { 'class': 'seg', role: 'group', 'aria-label': 'Mode' });
+    [['include', 'Include'], ['exclude', 'Exclude']].forEach(function (m) {
+      const b = el('button', { type: 'button', 'aria-pressed': String(f.mode === m[0]), 'data-focus': 'mode-' + m[0], text: m[1] });
+      b.addEventListener('click', function () { f.mode = m[0]; refresh(); });
+      seg.appendChild(b);
+    });
+    msel.appendChild(seg);
+    msel.appendChild(el('div', { 'class': 'hint', text: f.mode === 'include' ? 'Show only rows with the ticked values.' : 'Hide rows with the ticked values.' }));
+
+    const acts = el('div', { 'class': 'acts' });
+    const all = el('button', { type: 'button', 'class': 'plain', 'data-focus': 'all', text: 'Select all' });
+    all.addEventListener('click', function () { vals.forEach(function (v) { f.sel.add(v); }); refresh(); });
+    const none = el('button', { type: 'button', 'class': 'plain', 'data-focus': 'none', text: 'Select none' });
+    none.addEventListener('click', function () { f.sel.clear(); refresh(); });
+    acts.appendChild(all); acts.appendChild(none);
+    msel.appendChild(acts);
+
+    const list = el('div', { 'class': 'mslist' });
+    vals.forEach(function (v, i) {
+      const n = counts[v] || 0, on = f.sel.has(v);
+      const cb = el('input', { type: 'checkbox', 'data-focus': 'v' + i });
+      cb.checked = on;
+      cb.addEventListener('change', function () { if (cb.checked) f.sel.add(v); else f.sel.delete(v); refresh(); });
+      const cls = (n === 0 && !on ? 'zero ' : '') + (on && f.mode === 'exclude' ? 'struck' : '');
+      list.appendChild(el('label', { 'class': cls.trim() }, cb, el('span', { 'class': 't', text: shown(v) }), el('span', { 'class': 'n', text: String(n) })));
+    });
+    msel.appendChild(list);
+    msel.appendChild(el('div', { 'class': 'foot', text: visibleRows().length + ' of ' + ROWS.length + ' opportunities match' }));
+
+    if (mselBtn) positionMsel();
+    if (focusId) {
+      const t = msel.querySelector('[data-focus="' + focusId + '"]');
+      if (t) t.focus();
+    }
+  }
+
+  function positionMsel() {
+    const r = mselBtn.getBoundingClientRect();
+    const list = msel.querySelector('.mslist');
+    list.style.maxHeight = '';                          // start from the natural height
+    const w = msel.offsetWidth;
+    let h = msel.offsetHeight;
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+    const useAbove = h > below && above > below;        // open on the side with more room
+    const room = useAbove ? above : below;
+    if (h > room) {                                     // still too tall: shrink the value list and let it scroll
+      list.style.maxHeight = Math.max(90, room - (h - list.offsetHeight)) + 'px';
+      h = msel.offsetHeight;
+    }
+    msel.style.left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - w - 8)) + 'px';
+    const top = useAbove ? r.top - h - 4 : r.bottom + 4;
+    msel.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8)) + 'px';   // always keep it on screen
+  }
+
+  function openMsel(c, btn) {
+    closeMsel();
+    mselCol = c.key; mselBtn = btn;
+    msel.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    renderMsel();
+    const first = msel.querySelector('[data-focus]');
+    if (first) first.focus();
+  }
+  function closeMsel() {
+    if (mselBtn) mselBtn.setAttribute('aria-expanded', 'false');
+    msel.hidden = true; mselCol = null; mselBtn = null;
+  }
+
+  // Keeps every button label in step with the filters, and the open panel's counts.
+  function syncMsel() {
+    document.querySelectorAll('.msbtn').forEach(function (b) {
+      const key = b.getAttribute('data-col-filter'), f = filters[key], n = f.sel.size;
+      const state = n === 0 ? 'any' : n + (f.mode === 'include' ? ' included' : ' excluded');
+      b.querySelector('span').textContent = labelOf(key) + ': ' + state;
+      b.setAttribute('aria-label', labelOf(key) + ': ' + state);
+      b.classList.toggle('active', n > 0);
+    });
+    if (!msel.hidden && mselCol) renderMsel();
+  }
+
+  document.addEventListener('click', function (e) {
+    // composedPath() is fixed when the click starts, so it still works after a
+    // button inside the panel has been re-rendered away by its own handler.
+    const path = e.composedPath();
+    const inside = path.indexOf(msel) !== -1 || path.some(function (n) { return n.classList && n.classList.contains('msbtn'); });
+    if (!msel.hidden && !inside) closeMsel();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !msel.hidden) { const b = mselBtn; closeMsel(); if (b) b.focus(); }
+  });
+  document.addEventListener('focusin', function (e) {
+    if (!msel.hidden && !msel.contains(e.target) && !e.target.closest('.msbtn')) closeMsel();
+  });
+  window.addEventListener('scroll', function (e) {
+    if (!msel.hidden && !msel.contains(e.target)) closeMsel();
+  }, true);
+  window.addEventListener('resize', closeMsel);
+
+  // ---- column picker -----------------------------------------------------
+  const colBtn = document.getElementById('colbtn');
+  const colPanel = document.getElementById('colpanel');
+
+  function applyColumns() {
+    document.getElementById('colstyle').textContent = COLS
+      .filter(function (c) { return !visible.has(c.key); })
+      .map(function (c) { return '[data-col="' + c.key + '"]{display:none}'; }).join('');
+    document.querySelectorAll('[data-colbox]').forEach(function (cb) {
+      cb.checked = visible.has(cb.getAttribute('data-colbox'));
+      cb.disabled = cb.checked && visible.size === 1;   // always keep one column
+    });
+    colBtn.textContent = 'Columns (' + visible.size + ' of ' + COLS.length + ')';
+  }
+  function columnsChanged() { closeMsel(); applyColumns(); saveVisible(); refresh(); }
+  function setPanel(open) {
+    colPanel.hidden = !open;
+    colBtn.setAttribute('aria-expanded', String(open));
+  }
+
+  COLS.forEach(function (c) {
+    const cb = el('input', { type: 'checkbox', 'data-colbox': c.key });
+    cb.addEventListener('change', function () {
+      if (cb.checked) visible.add(c.key); else visible.delete(c.key);
+      columnsChanged();
+    });
+    document.getElementById('collist').appendChild(el('label', {}, cb, el('span', { text: c.label })));
+  });
+  colBtn.addEventListener('click', function () { setPanel(colPanel.hidden); });
+  document.getElementById('colall').addEventListener('click', function () {
+    visible = new Set(COLS.map(function (c) { return c.key; }));
+    columnsChanged();
+  });
+  document.getElementById('coldefault').addEventListener('click', function () {
+    visible = new Set(DEFAULT_VISIBLE);
+    columnsChanged();
+  });
+  document.addEventListener('click', function (e) {
+    if (!colPanel.hidden && !e.target.closest('.colpick')) setPanel(false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !colPanel.hidden) { setPanel(false); colBtn.focus(); }
+  });
+
+  buildHeader();
+  applyColumns();
+  refresh();
+})();
+</script>
+</body>
+</html>

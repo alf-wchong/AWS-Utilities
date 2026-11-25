@@ -1,0 +1,45 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PartnerCentralBenefitsRead",
+            "Effect": "Allow",
+            "Action": [
+                "partnercentral:ListBenefits",
+                "partnercentral:GetBenefit",
+                "partnercentral:ListBenefitApplications",
+                "partnercentral:GetBenefitApplication",
+                "partnercentral:ListBenefitAllocations",
+                "partnercentral:GetBenefitAllocation"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "partnercentral:Catalog": "AWS"
+                }
+            }
+        },
+        {
+            "Sid": "PartnerCentralSellingRead",
+            "Effect": "Allow",
+            "Action": [
+                "partnercentral:GetOpportunity",
+                "partnercentral:ListOpportunities"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "partnercentral:Catalog": "AWS"
+                }
+            }
+        },
+        {
+            "Sid": "PartnerCentralAwsOpportunitySummaryRead",
+            "Effect": "Allow",
+            "Action": [
+                "partnercentral:GetAwsOpportunitySummary"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
